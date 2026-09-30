@@ -1,0 +1,26 @@
+# AMR-MAPF: default configuration
+grid:
+  width: 20
+  height: 20
+  obstacle_density: 0.20
+
+robots:
+  count: 5
+
+planning:
+  algorithm: prioritized          # independent | prioritized | agentic
+  movement: 4                     # 4-directional movement
+  heuristic: manhattan            # manhattan | euclidean | chebyshev
+
+cost:
+  movement: 1
+  waiting: 1
+  sandbag_move: 4
+  obstacle_removal: 10
+
+experiment:
+  seed: 42
+  runs_per_config: 10             # repetitions per parameter combination
+  save_csv: true
+  save_plots: true
+  output_dir: experiments/results
