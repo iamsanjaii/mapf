@@ -102,6 +102,7 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
     ticks, stalled, idle = 0, False, 0
     livelock_ticks = 20 * (scenario.grid.height + scenario.grid.width)
     last_done, last_pushes, last_gain = 0, 0, 0
+    waits_at_progress = {i: 0 for i in world.counters}
     for t in range(cfg.horizon or cfg.max_ticks):
         active = [a for a in agents if not a.finished]
         if not active:
@@ -135,8 +136,15 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
                 world.despawn(a.id)
         ticks = t + 1
         idle = 0 if progress else idle + 1
+        if progress:
+            waits_at_progress = {i: c["waits"] for i, c in world.counters.items()}
         if idle >= cfg.stall_ticks:
             stalled = True
+            # Waiting out the stall window is not a cost of the run: charge nothing after the last progress tick,
+            # so J does not depend on stall_ticks.
+            for i, c in world.counters.items():
+                c["waits"] = waits_at_progress[i]
+            world.tick_cost[-idle:] = [0.0] * idle
             break
         done_now = sum(a.task_idx for a in agents)
         if done_now != last_done or world.removals != last_pushes:        # robots wandering is not progress

@@ -227,3 +227,14 @@ def test_dense_fuzz_with_cycles_never_collides():
         w.apply_actions(t, acts)
         assert len(set(w.pos.values())) == len(w.pos)
     assert w.overrides > 0
+
+
+def test_stalled_run_stops_charging_at_the_last_progress_tick():
+    from src.doi.config import SimConfig as _Cfg
+    from src.doi.runner import run_episode as _run
+    from src.doi.scenarios import scenario_from_ascii as _asc
+    s = _asc([".#.", ".#.", ".#."], [(0, 0)], [[(0, 2)]])           # the goal is walled off: no robot can progress
+    a = _run(_Cfg(policy="never", n_robots=1, tasks_per_robot=1, stall_ticks=20), scenario=s)
+    b = _run(_Cfg(policy="never", n_robots=1, tasks_per_robot=1, stall_ticks=60), scenario=s)
+    assert a.stalled and b.stalled
+    assert a.J == b.J and abs(a.J - sum(a.tick_cost)) < 1e-9
