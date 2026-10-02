@@ -372,7 +372,7 @@ Loop (up to max_iterations):
 ### Sandbags (`src/mapf_ro/sandbag.py`)
 
 - Sandbags are movable objects sitting on the grid
-- A robot can **carry** a sandbag and **deploy** it into an adjacent pit
+- Sandbag transport is accounted as a cost (Manhattan distance x per-step cost); robots do not physically carry them in the legacy code
 - Moving a sandbag costs extra energy (configurable, default 4 units per step)
 
 ### Traffic Index (`src/mapf_ro/removal.py`)
@@ -383,15 +383,18 @@ Before deciding to fill a pit, the system calculates a **Traffic Index**:
 
 ### Decision Logic
 
-```
-removal_cost  = base_cost / traffic_index
-detour_cost   = sum of extra steps for all affected robots
+Current behaviour (as implemented in `src/mapf_ro/removal.py`):
 
-If removal_cost < detour_cost:
-    → Fill the pit (environment modification is cheaper)
-Else:
-    → Reroute robots around the pit (detour is cheaper)
 ```
+removal_cost = sandbag_travel_cost + fill_cost
+net_benefit  = detour_cost - removal_cost
+fill the pit when net_benefit > 0
+```
+
+The traffic index is recorded but does not affect the decision. Sandbag
+transport is a cost estimate (Manhattan distance x per-step cost); no robot
+physically carries a sandbag in the legacy MAPF-RO code. The decentralised
+simulator in `src/doi/` models carrying physically.
 
 ### Replanning Loop (`src/mapf_ro/replanning.py`)
 

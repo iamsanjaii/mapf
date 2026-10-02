@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.idea/
+.DS_Store
+.coverage
+.pytest_cache/
+venv/
+experiments/results/doi/
+.env
+.env.*
