@@ -206,7 +206,8 @@ def play(args, input_fn=input, out=print):
     while True:
         for dest, prompt, cast, default, validate, hint in PLAY_FIELDS:
             vals[dest] = ask(prompt, cast, vals[dest], validate, hint, input_fn, out)
-        cfg = SimConfig(seed=vals["seed"], n_robots=vals["robots"], tasks_per_robot=1, kappa=vals["kappa"])
+        cfg = SimConfig(seed=vals["seed"], n_robots=vals["robots"], tasks_per_robot=1, kappa=vals["kappa"],
+                        bundle_max=getattr(args, "bundle_max", 1), lam=getattr(args, "lam", 0.5))
         try:
             cfg, scenario = build_layout("strips", cfg, dict(
                 rows=vals["rows"], cols=vals["cols"], strips=0, strip_min=1, strip_max=1,
@@ -227,7 +228,8 @@ def play(args, input_fn=input, out=print):
         out("\n  Repeat this run: python run_doi.py --layout strips --yes --strips 0 --tasks 1 "
             f"--rows {vals['rows']} --cols {vals['cols']} --robots {vals['robots']} --pallets {vals['pallets']} "
             f"--crates {vals['crates']} --shelves {vals['shelves']} --kappa {vals['kappa']:g} "
-            f"--seed {vals['seed']} --policy {','.join(PLAY_ARMS)}")
+            f"--seed {vals['seed']} --bundle-max {cfg.bundle_max} --lam {cfg.lam:g} "
+            f"--policy {','.join(PLAY_ARMS)}")
         if not args.no_show:
             out("\n  Opening the window (never vs rof). Close it to continue.")
             animate_runs(scenario, {a: runs[a] for a in ("never", "rof")}, cfg, show=True, fps=args.fps)
