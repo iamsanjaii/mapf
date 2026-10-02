@@ -4,6 +4,7 @@ from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
 from src.doi.belief import BeliefState
 from src.doi.config import SimConfig
+from src.doi.hauler import Hauler, HaulState
 from src.doi.network import Message
 from src.doi.paths import bfs_dist_map, dream_path, passable_fn, single_pit_rents
 from src.doi.policies import FillPolicy, Shared
@@ -63,7 +64,12 @@ class RobotAgent:
         self.blocked_streak = 0
         self.intents: Dict[int, IntentRecord] = {}
         self.sensed_cells: FrozenSet[Pos] = frozenset()
+        self._prev_sensed: FrozenSet[Pos] = frozenset()
+        self.wait_streak = 0
         self._planned_task = -1
+        self._plan_goal: Optional[Pos] = None
+        self._hauled = False
+        self.hauler = Hauler(self)
         self._last_action: Optional[Action] = None
         self._reserved_cache: Tuple[int, Set[Tuple[Pos, int]]] = (-1, set())
 
@@ -85,6 +91,7 @@ class RobotAgent:
         for c in sorted(obs.scanned - obs.blocked_cells):
             if b.status(c) in ("reported", "confirmed"):
                 b.observe_cell(c, False, t)
+        self._prev_sensed = self.sensed_cells
         self.sensed_cells = obs.robot_cells
         if self._snapshot_view() != before:
             self.replan_needed = True
@@ -119,11 +126,18 @@ class RobotAgent:
                     if rec.start_tick + k >= t:
                         reserved.add((cell, rec.start_tick + k))
             else:
-                nxt = rec.cells[min(age + 1, len(rec.cells) - 1)]
-                reserved.add((nxt, t + 1))
+                idx = min(age, len(rec.cells) - 1)
+                if idx + 1 >= len(rec.cells):
+                    reserved.add((rec.cells[-1], t + 1))
+                for k in range(idx + 1, len(rec.cells)):
+                    reserved.add((rec.cells[k], rec.start_tick + k))
+                    if rec.cells[k] != rec.cells[idx]:
+                        break
+        horizon = 3 * (self.H + self.W) if self.wait_streak >= 2 else 1
         for cell in self.sensed_cells:
-            if cell not in explained:
-                reserved.add((cell, t + 1))
+            if cell not in explained or cell in self._prev_sensed:
+                for k in range(1, horizon + 1):
+                    reserved.add((cell, t + k))
         self._reserved_cache = (t, reserved)
         return reserved
 
@@ -154,32 +168,57 @@ class RobotAgent:
         self.plan_infos.append(info)
         self.stats["rent_counted"] += info.rent
         self._planned_task = self.task_idx
+        self._plan_goal = None
         self.policy.on_task_planned(self, info, t)
 
-    def _replan(self, t: int) -> None:
+    def _replan(self, t: int, goal: Pos) -> None:
         pf = self._passable()
-        h = bfs_dist_map(pf, self.goal, self.H, self.W)
-        path = plan_spacetime(pf, self.pos, self.goal, t, self._reservations(t), h, 3 * (self.H + self.W))
+        h = bfs_dist_map(pf, goal, self.H, self.W)
+        path = plan_spacetime(pf, self.pos, goal, t, self._reservations(t), h, 3 * (self.H + self.W))
         self.plan = path if path else [self.pos]
+        self._plan_goal = goal
         self.replan_needed = False
         self.blocked_streak = 0
         self.stats["replans"] += 1
 
+    def invalidate_plan(self) -> None:
+        self._plan_goal = None
+        self.replan_needed = True
+
+    def follow(self, goal: Pos, t: int) -> Action:
+        if (self._plan_goal != goal or self.replan_needed or self.blocked_streak >= 2
+                or self._plan_conflict(t) or (len(self.plan) <= 1 and self.pos != goal)):
+            self._replan(t, goal)
+        if len(self.plan) > 1 and self.plan[1] != self.plan[0]:
+            return Move(self.plan[1])
+        return Wait()
+
     def decide(self, t: int) -> Action:
-        new_task = self._planned_task != self.task_idx
-        if new_task:
-            self._begin_task(t)
-        if (new_task or self.replan_needed or self.blocked_streak >= 2 or self._plan_conflict(t)
-                or (len(self.plan) <= 1 and self.pos != self.goal)):
-            self._replan(t)
-        action: Action = Move(self.plan[1]) if len(self.plan) > 1 and self.plan[1] != self.plan[0] else Wait()
+        h = self.hauler
+        h.update(t)
+        action: Optional[Action] = None
+        if h.active():
+            action = h.step(t)
+        if action is None:
+            if self._planned_task != self.task_idx:
+                self._begin_task(t)
+            if h.state == HaulState.NONE:
+                proposal = self.policy.propose(self, t)
+                if proposal is not None:
+                    h.offer(proposal, t)
+                    h.update(t)
+                    if h.active():
+                        action = h.step(t)
+        self._hauled = action is not None
+        if action is None:
+            action = self.follow(self.goal, t)
         self._last_action = action
         return action
 
     def outgoing(self, t: int) -> List[Message]:
         cells = tuple(self.plan[: self.cfg.intent_window + 1])
         out = [Message(self.id, "INTENT", (t, self.blocked_ticks, cells), len(cells), t)]
-        if self.policy.uses_gossip and t % self.cfg.gossip_period == 0:
+        if self.policy.uses_gossip and (t % self.cfg.gossip_period == 0 or self.hauler.holds_claim()):
             out.append(Message(self.id, "STATE", self.belief.snapshot(), self.belief.units(), t))
         return out
 
@@ -187,6 +226,9 @@ class RobotAgent:
         action = self._last_action
         self.pos = res.pos
         self.blocked_ticks = res.blocked_ticks
+        self.carrying = res.carrying
+        if self._hauled:
+            self.hauler.on_result(action, res, t)
         if isinstance(action, Move):
             if res.ok:
                 self.plan = self.plan[1:] or [self.pos]
@@ -198,7 +240,8 @@ class RobotAgent:
                     self.replan_needed = True
         elif isinstance(action, Wait) and len(self.plan) > 1:
             self.plan = self.plan[1:]
-        if self.pos == self.goal:
+        self.wait_streak = self.wait_streak + 1 if isinstance(action, Wait) else 0
+        if not self._hauled and self.pos == self.goal:
             self.task_idx += 1
             self.replan_needed = True
             if self.task_idx >= len(self.tasks):

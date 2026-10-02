@@ -131,8 +131,11 @@ class Claim:
 
 
 class ClaimSet:
+    """Ticket -> (claim, expiry) with max-merge expiry; released tickets are grow-only tombstones."""
+
     def __init__(self) -> None:
         self._d: Dict[Ticket, Tuple[Claim, int]] = {}
+        self._released: set = set()
 
     def issue(self, ticket: Ticket, claim: Claim, expiry: int) -> None:
         if ticket in self._d:
@@ -146,29 +149,36 @@ class ClaimSet:
             claim, old = self._d[ticket]
             self._d[ticket] = (claim, max(old, expiry))
 
+    def release(self, ticket: Ticket) -> None:
+        self._released.add(ticket)
+
     def effective(self, pit: Pos, now: int) -> Optional[Tuple[Ticket, Claim]]:
-        live = [(t, c) for t, (c, exp) in self._d.items() if pit in c.pits and exp > now]
+        live = [(t, c) for t, (c, exp) in self._d.items()
+                if pit in c.pits and exp > now and t not in self._released]
         return min(live, key=lambda x: x[0]) if live else None
 
     def tickets_of(self, robot_id: int) -> List[Ticket]:
         return sorted(t for t, (c, _) in self._d.items() if c.hauler == robot_id)
 
     def merge(self, other: "ClaimSet") -> bool:
-        before = dict(self._d)
+        before = (dict(self._d), set(self._released))
         for t, (c, exp) in other._d.items():
             self.issue(t, c, exp)
-        return self._d != before
+        self._released |= other._released
+        return (self._d, self._released) != before
 
     def units(self) -> int:
-        return len(self._d)
+        return len(self._d) + len(self._released)
 
     def copy(self) -> "ClaimSet":
         out = ClaimSet()
         out._d = dict(self._d)
+        out._released = set(self._released)
         return out
 
     def canonical(self) -> Any:
-        return tuple(sorted((t, c.pits, c.hauler, exp) for t, (c, exp) in self._d.items()))
+        return (tuple(sorted((t, c.pits, c.hauler, exp) for t, (c, exp) in self._d.items())),
+                frozenset(self._released))
 
 
 @dataclass(frozen=True)

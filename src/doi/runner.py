@@ -82,6 +82,12 @@ def build_result(cfg, policy, world, network, agents, shared, ticks, stalled, ru
         fill_ticks=sorted(v for v in world.filled_at.values() if v >= 0),
         triggers=list(shared.triggers), plan_infos=infos, filled_at=dict(world.filled_at),
         appeared_at=dict(world.appeared_at),
+        edits=sorted((e for a in agents for e in a.hauler.edits), key=lambda e: (e["fill_tick"], e["pit"])),
+        wasted_haul_cost=float(cfg.kappa * sum(a.hauler.wasted_steps for a in agents)),
+        unconfirmed_hauls=sum(a.hauler.stats["unconfirmed"] for a in agents),
+        claims={"issued": sum(a.hauler.stats["issued"] for a in agents),
+                "lost": sum(a.hauler.stats["lost"] for a in agents),
+                "aborts": sum(a.hauler.stats["aborts"] for a in agents)},
         wrong_class_attempts=sum(c["wrong_class_attempts"] for c in world.counters.values()),
         final_stock=dict(world.stock), runtime_ms=runtime_ms,
         trajectory={i: list(p) for i, p in world.trajectory.items()})
