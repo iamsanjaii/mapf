@@ -121,6 +121,12 @@ def summary_row(result: RunResult, ratios: Optional[Dict[str, float]] = None,
     ratios = ratios or {}
     nan = float("nan")
     full = scenario is not None and not cheap
+    if full:
+        U = _unreachable(result)
+        static_travel = float(sum(_dist(scenario.grid, _obstacles_at(result, p.tick), p.start, p.goal, U)
+                                  for p in result.plan_infos))
+    else:
+        static_travel = nan
     return {
         "policy": result.policy, "seed": cfg.seed, "scenario": cfg.scenario,
         "family": scenario.family if scenario is not None else "", "n_robots": cfg.n_robots,
@@ -140,5 +146,7 @@ def summary_row(result: RunResult, ratios: Optional[Dict[str, float]] = None,
         "wrong_class_attempts": result.wrong_class_attempts,
         "intake_records": result.intake["records"], "intake_rejected": result.intake["rejected"],
         "runtime_ms": result.runtime_ms,
+        "static_travel": static_travel,
+        "congestion_excess": result.J - result.push_cost - result.fee_total - static_travel if full else nan,
         "hr": ratios.get("hr", nan), "hr_av": ratios.get("hr_av", nan), "pod": pod if pod is not None else nan,
     }

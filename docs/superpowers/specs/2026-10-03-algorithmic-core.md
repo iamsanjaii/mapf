@@ -517,16 +517,39 @@ class BundlePlan:
 def bundle_plans(grid, distance, blocked, firsts: List[PushPlan], eligible_after: Callable[[PushPlan], List[Pos]],
                  kind_of, goal, kappa, fee, max_steps, unreachable) -> List[BundlePlan]
 ```
-`bundle_plans`: for each `p1` in `firsts`, call `candidate_plans(grid, distance, p1.after,
-eligible_after(p1), kind_of2, p1.end, goal, kappa, fee, max_steps, unreachable)`. Here `kind_of2` returns
-`p1.kind` for `p1.landing` and `kind_of(c)` otherwise. Make a `BundlePlan(p1, p2)` for each result `p2`. Return
-them sorted by `(total, first.obstacle, first.direction, first.steps, second.obstacle, second.direction,
-second.steps)`. Do not change `candidate_plans`.
+Also add (decision of 2026-10-03, binding):
+
+```python
+def all_length_plans(grid, distance, blocked, candidates, kind_of, pos, goal, kappa, fee, max_steps, unreachable,
+                     skip=frozenset(), dead_end_guard=True) -> List[PushPlan]
+
+def plan_key(plan) -> Tuple[Tuple[Pos, Pos, int], ...]
+    # PushPlan:   ((obstacle, direction, steps),)
+    # BundlePlan: ((first.obstacle, first.direction, first.steps), (second.obstacle, second.direction, second.steps))
+```
+
+* `all_length_plans` has the same arguments and legality rules as `candidate_plans`: the approach is free, cells
+  are checked in order and the loop stops at the first cell that is not free, `landing == goal` is skipped, and
+  so are dead landings. The difference is that it returns **every** legal `(obstacle, direction, steps)` plan,
+  not only the cheapest per direction. Sort the result by `(total, plan_key(plan))`. This matches the abstract
+  model, which enumerates every push length. It is needed because the first leg of a good two-step plan is often
+  not the cheapest single push for this robot. In G1, east 1 is useless alone but is the first leg of the optimum.
+* `plan_key` mirrors the abstract model's `tuple(a.key() for a in plan)`. Use it everywhere a plan needs an
+  identity: sorting, tie-breaking, predictions, randomized draws and trigger logs.
+
+`bundle_plans`: `firsts` is the output of `all_length_plans`. For each `p1` in `firsts`, call
+`all_length_plans(grid, distance, p1.after, eligible_after(p1), kind_of2, p1.end, goal, kappa, fee, max_steps,
+unreachable)` for the second legs. Here `kind_of2` returns `p1.kind` for `p1.landing` and `kind_of(c)`
+otherwise. Make a `BundlePlan(p1, p2)` for each result `p2`. Return them sorted by `(total, plan_key(plan))`.
+Do not change `candidate_plans`.
 
 ### 5.3 Agent (`src/doi/agent.py`, `_consider_push` only, plus one line in `decide`)
 
-* After `plans = candidate_plans(...)`, if `self.cfg.bundle_max == 2` and `plans` is non-empty, extend `plans` with
-  `bundle_plans(...)`, using:
+* If `self.cfg.bundle_max == 1`, leave everything exactly as it is (`plans = candidate_plans(...)`).
+* If `self.cfg.bundle_max == 2`, replace the call: `singles = all_length_plans(...)` (same arguments as the existing
+  `candidate_plans` call, including `skip`), and `plans = singles + bundle_plans(..., firsts=singles, ...)`. Then
+  return `None` if `plans` is empty, as before. Singles and pairs therefore both cover every push length, the
+  same candidate set as `abstract.online.candidates`. `bundle_plans` uses:
   `eligible_after(p1) = [c for c in dream_path(self.grid, tuple(sorted(p1.after - b.hard_blocked())), p1.end,
   self.goal, self.U, b.hard_blocked()).bundle if c == p1.landing or (c in eligible_set)]`,
   where `eligible_set = set(eligible)`.
@@ -535,18 +558,22 @@ second.steps)`. Do not change `candidate_plans`.
   `self.pusher.start(plan.first if isinstance(plan, BundlePlan) else plan, t)`.
   The robot carries out the first leg only. After it, the ordinary rule re-decides the second obstacle, and its
   evidence is then the full complement saving. Put this sentence in a comment.
-* `trigger(...)` in `policies.py` must add `"bundle": isinstance(plan, BundlePlan)` to its dict.
+* `trigger(...)` in `policies.py` must add `"bundle": isinstance(plan, BundlePlan)` and `"plan": plan_key(plan)`
+  to its dict.
+* The selection loop's tie-break stays `(score, -plan.total)`. When that also ties, the first plan in list order
+  wins, and the list is sorted by `(total, plan_key)`, so the result is deterministic.
 
 ### 5.4 New arms (`src/doi/policies.py`)
 
 * `make_policy`: `"rof_r"` returns `RandomizedPolicy(theta=cfg.theta)`. `"rof_p"` returns
   `PredictedPolicy(lam=cfg.lam)`.
 * `class RandomizedPolicy(LedgerPolicy)`: `name = "rof_r"`, gossip scope. In `assess`, the threshold is
-  `z = math.log(1 + u01(self.cfg.seed, plan.obstacle[0], plan.obstacle[1], 31) * (math.e - 1))` instead of
-  `self.theta`. Everything else is as in `LedgerPolicy.assess`.
+  `z = max(math.log(1 + u01(self.cfg.seed, o[0], o[1], 31) * (math.e - 1)) for o, _d, _k in plan_key(plan))`
+  instead of `self.theta`: the largest draw over the obstacles the plan moves, as in the abstract model.
+  Everything else is as in `LedgerPolicy.assess`.
 * `class PredictedPolicy(LedgerPolicy)`: `name = "rof_p"`, gossip scope. On each agent object, keep a dict
   `agent.predictions` (create it lazily with `getattr(agent, "predictions", None)`), keyed by
-  `(plan.obstacle, plan.direction, plan.steps)`. The first time a key is seen, compute the forecast exactly as
+  `plan_key(plan)`. Never use `plan.direction`: `BundlePlan` has no `direction`. The first time a key is seen, compute the forecast exactly as
   `LedgerPolicy.saving` does with `forecast=True` (call the parent logic; do not copy it), and store
   `forecast >= price`. Threshold: `self.lam` if the stored value is True, else `1 / self.lam`. Known saving:
   the non-forecast `saving` (ledger + mine).
@@ -611,6 +638,13 @@ New file `tests/doi/test_doi_bundles.py`:
    config.
 5. `test_new_arms_run_and_finish`: `rof_r` and `rof_p` on `single_block` and `complements` (`bundle_max=2`):
    `not stalled`, `unfinished_tasks == 0`.
+6a. `test_all_length_plans_includes_every_length`: on the G1 map (`scenario_from_ascii(G1_ROWS, ...)`), robot
+   at `(1,0)`, goal `(1,6)`, `kappa=1`, `fee=1`, `push_max=6`, pallet eligible. The keys of `all_length_plans` are
+   exactly east 1, 2, 3 and west 1, 2. East 4 lands on the goal and is skipped. West plans are approached from
+   `(1,3)` by the long way round, and robots are not obstacles to the legality check. The existing
+   `candidate_plans` still returns at most one plan per direction.
+6b. `test_plan_key_shapes`: `plan_key` of a `PushPlan` is a 1-tuple and of a `BundlePlan` a 2-tuple of
+   `(obstacle, direction, steps)`, and both are hashable.
 6. `test_hindsight_row_includes_buy`: capture `print_summary` output for `single_block` with `free` and
    `hindsight`; the hindsight cost printed equals `J_censored + hindsight_buy`.
 
@@ -711,7 +745,7 @@ Do not add commentary on what the results mean.
 ## What NOT to do (summary, all binding)
 
 * Do not alter physics, motion, gossip, CRDTs, incidents, the LLM code, the animation, the wizard or the builder.
-* Do not change `candidate_plans`, `series_blocks`, existing defaults, or any existing expected value.
+* Do not change `candidate_plans` (add `all_length_plans` beside it), `series_blocks`, existing defaults, or any existing expected value.
 * Do not make `bundle_max = 2` the default.
 * Do not put an LLM anywhere on the decision path. This spec adds no LLM work at all.
 * Do not "improve" the theorems, rename the arms, or add arms, metrics, flags or scenarios that are not listed.

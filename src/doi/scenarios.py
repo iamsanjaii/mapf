@@ -28,6 +28,8 @@ DEFAULTS: Dict[str, Dict[str, Any]] = {
                   block_cells=((2, 10), (4, 10), (10, 10), (12, 10)),
                   door_rows=(6, 7, 8), kinds=("pallet",), q_cross=0.8,
                   shift_after_task=10, hot_before=(0, 6), hot_after=(8, 14), q_hot=0.8),
+    "complements": dict(H=15, W=23, wall_cols=(7, 15), gap_row=3, door_rows=(12, 13, 14),
+                        kinds=("pallet",), band=(0, 6)),
     "random_blocks": dict(H=20, W=20, strips=3, strip_len_min=4, strip_len_max=8, pallets=3, crates=2, shelves=1),
     "warehouse_blocks": dict(map_path=None, n_blocks=6, kinds=("pallet",)),
     "warehouse_incidents": dict(map_path=None, n_incidents=4, **{**_INCIDENT_COMMON, "appear_max": 1000}),
@@ -181,6 +183,45 @@ def _two_room(cfg: SimConfig, params: Dict[str, Any]) -> Scenario:
     return Scenario(name=cfg.scenario, family="S", grid=grid, obstacles=obstacles, starts=starts, tasks=tasks,
                     meta={"rooms": {"west_cols": west_cols, "east_cols": east_cols},
                           "params": params, "seed": cfg.seed})
+
+
+def _complements(cfg: SimConfig, params: Dict[str, Any]) -> Scenario:
+    """Three rooms in a row; each wall has a doorway at the top blocked by a pallet and open doors at the bottom.
+
+    Why the saving is zero for one doorway: from row r1 <= 6 in the west to r2 <= 6 in the east, the doors cost
+    (12-r1) + (12-r2) rows of vertical travel. Opening only the west doorway costs |r1-3| + 9 + (12-r2), which is
+    the same or more. The same holds for the east doorway by symmetry."""
+    H, W = params["H"], params["W"]
+    wall_cols, gap_row, band = tuple(params["wall_cols"]), params["gap_row"], tuple(params["band"])
+    kinds = tuple(params["kinds"])
+    for k in kinds:
+        if k not in KINDS:
+            raise ValueError(f"unknown obstacle kind {k!r}: choose from {', '.join(KINDS)}")
+    grid = Grid(W, H)
+    for wc in wall_cols:
+        for r in range(H):
+            if r not in params["door_rows"] and r != gap_row:
+                grid.set(r, wc, CellType.OBSTACLE)
+    obstacles = {(gap_row, wc): kinds[k % len(kinds)] for k, wc in enumerate(wall_cols)}
+    in_band = lambda cells: [p for p in cells if band[0] <= p[0] <= band[1] and p not in obstacles]
+    rooms = {"west": _room_cells(grid, range(0, wall_cols[0])),
+             "east": _room_cells(grid, range(wall_cols[1] + 1, W))}
+    n_west = cfg.n_robots // 2
+    start_rooms = ["west" if i < n_west else "east" for i in range(cfg.n_robots)]
+    starts = _draw_starts(cfg, [in_band(rooms[r]) for r in start_rooms])
+    tasks: List[List[Pos]] = []
+    for i in range(cfg.n_robots):
+        rng = stream(cfg.seed, f"tasks-{i}")
+        room, prev = start_rooms[i], starts[i]
+        goals: List[Pos] = []
+        for _ in range(cfg.tasks_per_robot):
+            room = "east" if room == "west" else "west"
+            goal = rng.choice([p for p in in_band(rooms[room]) if p != prev])
+            goals.append(goal)
+            prev = goal
+        tasks.append(goals)
+    return Scenario(name=cfg.scenario, family="S", grid=grid, obstacles=obstacles, starts=starts, tasks=tasks,
+                    meta={"params": params, "seed": cfg.seed})
 
 
 def _random_blocks(cfg: SimConfig, params: Dict[str, Any]) -> Scenario:
@@ -412,6 +453,8 @@ def build_scenario(cfg: SimConfig) -> Scenario:
     params = _resolve_params(cfg)
     if cfg.scenario in _TWO_ROOM:
         return _two_room(cfg, params)
+    if cfg.scenario == "complements":
+        return _complements(cfg, params)
     if cfg.scenario == "random_blocks":
         return _random_blocks(cfg, params)
     if cfg.scenario == "warehouse_blocks":

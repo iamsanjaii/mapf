@@ -7,7 +7,7 @@ from src.doi.config import SimConfig
 from src.doi.network import Message
 from src.doi.paths import bfs_dist_map, dream_path, passable_fn
 from src.doi.policies import PushPolicy, Shared, trigger
-from src.doi.pushplan import candidate_plans
+from src.doi.pushplan import BundlePlan, all_step_plans, bundle_plans, candidate_plans
 from src.doi.pusher import Pusher
 from src.doi.rng import u01
 from src.doi.scenarios import Scenario
@@ -313,7 +313,9 @@ class RobotAgent:
             if not self.pusher.active():
                 plan = self._consider_push(t)
                 if plan is not None:
-                    self.pusher.start(plan, t)
+                    # The robot carries out the first leg only. After it, the ordinary rule re-decides the second
+                    # obstacle, and its evidence is then the full complement saving.
+                    self.pusher.start(plan.first if isinstance(plan, BundlePlan) else plan, t)
                     action = self.pusher.step(t)
         self._pushing = action is not None and self.pusher.active()
         if action is None:
@@ -346,6 +348,17 @@ class RobotAgent:
                                 self.cfg.kappa, self.cfg.fee, self.cfg.push_max, self.U, skip)
         if not plans:
             return None
+        if self.cfg.bundle_max == 2:
+            eligible_set = set(eligible)
+            hard = b.hard_blocked()
+
+            def eligible_after(p1):
+                bundle = dream_path(self.grid, tuple(sorted(p1.after - hard)), p1.end, self.goal, self.U, hard).bundle
+                return [c for c in bundle if c == p1.landing or c in eligible_set]
+            firsts = all_step_plans(self.grid, engine.distance, blocked, eligible, b.kind_of, self.pos, self.goal,
+                                    self.cfg.kappa, self.cfg.fee, self.cfg.push_max, self.U, skip)
+            plans = plans + bundle_plans(self.grid, engine.distance, blocked, firsts, eligible_after, b.kind_of,
+                                         self.goal, self.cfg.kappa, self.cfg.fee, self.cfg.push_max, self.U)
         info = TaskPlanInfo(self.id, self.task_idx, t, self.pos, self.goal, d.d_block, d.d_open,
                             tuple(sorted(d.bundle)), d.rent, blocked, b.hard_blocked())
         best = None

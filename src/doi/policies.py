@@ -13,6 +13,7 @@ way, or go round? Every arm sees the same candidate plan (see pushplan.py); they
   free       benchmark: every obstacle is gone at tick 0, for free
   hindsight  benchmark: the best set of obstacles is gone at tick 0, charged its lowest possible price
 """
+import math
 from abc import ABC
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, FrozenSet, List, Optional, Tuple
@@ -21,7 +22,8 @@ from src.doi.belief import CLASS_CODE, BeliefState
 from src.doi.config import SimConfig
 from src.doi.crdt import RentRecord
 from src.doi.oracle import hindsight
-from src.doi.pushplan import PushPlan
+from src.doi.pushplan import BundlePlan, PushPlan
+from src.doi.rng import u01
 
 if TYPE_CHECKING:
     from src.doi.agent import RobotAgent, TaskPlanInfo
@@ -125,6 +127,51 @@ class LedgerPolicy(PushPolicy):
         return known - price, known, price
 
 
+class RandomizedPolicy(LedgerPolicy):
+    """Rent-or-Fill with a random threshold z in [0, 1] (density e^z / (e - 1)), shared by all robots per obstacle."""
+
+    def __init__(self, theta: float = 1.0) -> None:
+        super().__init__("rof_r", theta)
+
+    def assess(self, agent, plan, info):
+        known = self.saving(agent, plan)
+        price = price_of(plan, info)
+        z = math.log(1 + u01(self.cfg.seed, plan.obstacle[0], plan.obstacle[1], 31) * (math.e - 1))
+        if known <= 0 or known < z * price:
+            return None
+        return known - price, known, price
+
+
+class PredictedPolicy(LedgerPolicy):
+    """Rent-or-Fill whose threshold is lam if the robot's forecast says the push will pay, else 1 / lam."""
+
+    def __init__(self, lam: float) -> None:
+        super().__init__("rof_p", theta=1.0, forecast=False)
+        self.lam = lam
+
+    def _forecast(self, agent, plan) -> float:
+        self.forecast = True
+        try:
+            return self.saving(agent, plan)
+        finally:
+            self.forecast = False
+
+    def assess(self, agent, plan, info):
+        price = price_of(plan, info)
+        predictions = getattr(agent, "predictions", None)
+        if predictions is None:
+            predictions = agent.predictions = {}
+        legs = (plan.first, plan.second) if isinstance(plan, BundlePlan) else (plan,)
+        key = tuple((p.obstacle, p.direction, p.steps) for p in legs)
+        if key not in predictions:
+            predictions[key] = self._forecast(agent, plan) >= price
+        thr = self.lam if predictions[key] else 1.0 / self.lam
+        known = self.saving(agent, plan)
+        if known <= 0 or known < thr * price:
+            return None
+        return known - price, known, price
+
+
 class CentralPolicy(LedgerPolicy):
     """Omniscient arm: one global ledger and the true map, refreshed every tick; robots still push on their own routes."""
 
@@ -185,7 +232,8 @@ class HindsightPolicy(PushPolicy):
 
 def trigger(t: int, agent, plan: PushPlan, known: float, price: float) -> dict:
     return {"tick": t, "robot": agent.id, "cells": (plan.obstacle,), "kind": plan.kind, "landing": plan.landing,
-            "steps": plan.steps, "known": float(known), "buy": float(price)}
+            "steps": plan.steps, "known": float(known), "buy": float(price),
+            "bundle": isinstance(plan, BundlePlan)}
 
 
 def make_policy(cfg: SimConfig) -> PushPolicy:
@@ -202,6 +250,10 @@ def make_policy(cfg: SimConfig) -> PushPolicy:
         return LedgerPolicy("rof_local", theta=cfg.theta, scope="local")
     if name == "rof_f":
         return LedgerPolicy("rof_f", theta=cfg.theta, forecast=True)
+    if name == "rof_r":
+        return RandomizedPolicy(theta=cfg.theta)
+    if name == "rof_p":
+        return PredictedPolicy(lam=cfg.lam)
     if name == "central":
         return CentralPolicy(theta=cfg.theta)
     if name == "hindsight":

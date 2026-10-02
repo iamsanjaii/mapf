@@ -120,12 +120,19 @@ def print_arms(policies, runs, scenario):
               f"messages {r.messages['transmissions']} ledger / {r.traffic_messages['transmissions']} traffic")
 
 
+HINDSIGHT_NOTE = ("hindsight is a relaxed lower reference (obstacles vanish, no walking); it is not achievable and "
+                 "not an upper bound.")
+
+
 def print_summary(policies, runs):
     """The default terminal output: one table of cost and pushes, and one sentence on who won."""
     print(f"\n{'arm':10s} {'cost':>8s} {'pushes':>7s}")
     for name in policies:
         r = runs[name]
-        print(f"{name:10s} {r.J_censored:8.0f} {r.removals:7d}" + ("   (stalled)" if r.stalled else ""))
+        cost = r.J_censored + r.hindsight_buy if name == "hindsight" else r.J_censored
+        print(f"{name:10s} {cost:8.0f} {r.removals:7d}" + ("   (stalled)" if r.stalled else ""))
+    if "hindsight" in policies:
+        print(HINDSIGHT_NOTE)
     print("\n" + verdict({n: runs[n] for n in policies}))
     print("--verbose: event timeline, benchmarks and statistics.   --guide: every flag.   --list: scenarios and arms.")
 
@@ -143,7 +150,8 @@ def print_comparison(names, runs):
     print(header)
     for name in names:
         r = runs[name]
-        line = (f"{name:10s} {r.J_censored:8.0f} {r.removals:6d} {r.waits:6d} "
+        cost = r.J_censored + r.hindsight_buy if name == "hindsight" else r.J_censored
+        line = (f"{name:10s} {cost:8.0f} {r.removals:6d} {r.waits:6d} "
                 f"{collateral_cost(r, r.scenario, SimConfig(**r.cfg)):7.0f} {r.push_rejected:6d} {str(r.stalled):>7s}")
         if have_bench:
             if name in ("free", "hindsight"):
@@ -154,6 +162,8 @@ def print_comparison(names, runs):
         if "central" in runs:
             line += f" {r.J_censored / runs['central'].J_censored:6.2f}" if name not in ("free", "hindsight", "central") else f" {'-':>6s}"
         print(line)
+    if "hindsight" in runs:
+        print(HINDSIGHT_NOTE)
     if have_bench:
         h = runs["hindsight"]
         print(f"\nfree      : every obstacle gone at no charge (J = travel nobody can avoid)          J = {runs['free'].J_censored:.0f}"

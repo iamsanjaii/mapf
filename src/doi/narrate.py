@@ -15,6 +15,9 @@ SCENARIO_NOTES: Dict[str, Tuple[str, str]] = {
                               "times; a good all-round demo with 8 to 12 robots."),
     "shift": ("S", "Like multi_block_wall, but half way through the run the busy region moves, so old evidence "
                    "becomes stale."),
+    "complements": ("S", "Three rooms in a row; each wall has a doorway at the top blocked by a pallet and open "
+                         "doors at the bottom. Opening one doorway saves nothing; opening both saves a lot (the "
+                         "obstacles are complements)."),
     "random_blocks": ("S", "An open floor with removable obstacles (pallets, crates, shelf units) anywhere, and "
                            "optional wall strips. Isolated obstacles cost a step or two of detour, so only a "
                            "cluttered floor or a cheap push (low kappa) gives pushing anything to win."),
@@ -35,6 +38,8 @@ ARM_NOTES: Dict[str, str] = {
     "rof": "Rent-or-Fill: pushes when the fleet's accumulated detour cost reaches the price of the push",
     "rof_local": "Rent-or-Fill without sharing the ledger (every robot only knows its own detours)",
     "rof_f": "Rent-or-Fill that forecasts the fleet's remaining traffic from what it has seen",
+    "rof_r": "Rent-or-Fill with a random threshold between 0 and 1 times the price (expected ratio e/(e-1))",
+    "rof_p": "Rent-or-Fill that lowers its threshold when its forecast says the push will pay, and raises it when not",
     "central": "Rent-or-Fill with one omniscient ledger and map (the cost of NOT being decentralised)",
     "hindsight": "benchmark: knows every task in advance, removes the best obstacles at tick 0, charged the lowest "
                  "possible price",

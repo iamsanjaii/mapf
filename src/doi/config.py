@@ -3,7 +3,8 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-POLICIES = frozenset({"never", "myopic", "eager", "rof", "rof_local", "rof_f", "central", "hindsight", "free"})
+POLICIES = frozenset({"never", "myopic", "eager", "rof", "rof_local", "rof_f", "central", "hindsight", "free",
+                      "rof_r", "rof_p"})
 
 
 @dataclass
@@ -27,6 +28,8 @@ class SimConfig:
     intent_window: int = 6
     policy: str = "rof"
     theta: float = 1.0
+    bundle_max: int = 1
+    lam: float = 0.5
     intake: str = "none"
     intake_cache: str = "experiments/results/doi/intake_cache"
     tick_seconds: float = 0.5
@@ -52,6 +55,8 @@ class SimConfig:
             (self.tasks_per_robot >= 1, "tasks_per_robot must be >= 1"),
             (self.push_max >= 1, "push_max must be >= 1"),
             (self.policy in POLICIES, f"unknown policy {self.policy!r}"),
+            (self.bundle_max in (1, 2), "bundle_max must be 1 or 2"),
+            (0 < self.lam <= 1, "lam must be in (0, 1]"),
             (self.intake in ("none", "oracle") or self.intake.startswith("llm:"),
              f"bad intake {self.intake!r}"),
             (0 <= self.p_wrong_class <= 1, "p_wrong_class must be in [0, 1]"),

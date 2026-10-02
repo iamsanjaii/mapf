@@ -90,3 +90,89 @@ def best_push_plan(*args, **kwargs) -> Optional[PushPlan]:
     """The single cheapest plan for this robot (see candidate_plans)."""
     plans = candidate_plans(*args, **kwargs)
     return plans[0] if plans else None
+
+
+def all_step_plans(grid: Grid, distance: Callable[[Pos, Pos, FrozenSet[Pos]], float], blocked: FrozenSet[Pos],
+                   candidates: Iterable[Pos], kind_of: Callable[[Pos], Optional[str]], pos: Pos, goal: Pos,
+                   kappa: float, fee: float, max_steps: int, unreachable: float,
+                   skip: FrozenSet[Pos] = frozenset()) -> List[PushPlan]:
+    """Like candidate_plans but keeps every push length, not only the cheapest per side.
+
+    First legs of a two-step plan need this: the cheapest single push can leave the obstacle just outside a doorway,
+    which only the second push (or a longer first push) clears."""
+    free = passable_fn(grid, closed=blocked)
+    free_static = passable_fn(grid)
+    out: List[PushPlan] = []
+    for obstacle in sorted(set(candidates) - skip):
+        kind = kind_of(obstacle) or "pallet"
+        for d in DIRS:
+            approach = (obstacle[0] - d[0], obstacle[1] - d[1])
+            if not free(approach):
+                continue
+            walk_in = distance(pos, approach, blocked)
+            if walk_in >= unreachable:
+                continue
+            for k in range(1, max_steps + 1):
+                landing = (obstacle[0] + k * d[0], obstacle[1] + k * d[1])
+                if not free(landing):
+                    break
+                if landing == goal or _dead(free_static, landing):
+                    continue
+                end = (obstacle[0] + (k - 1) * d[0], obstacle[1] + (k - 1) * d[1])
+                after = (blocked - {obstacle}) | {landing}
+                out.append(PushPlan(obstacle, kind, d, approach, k, landing, end, walk_in,
+                                    k * kappa * weight(kind) + fee, distance(end, goal, after), blocked,
+                                    frozenset(after)))
+    return sorted(out, key=lambda p: (p.total, p.obstacle, p.direction, p.steps))
+
+
+@dataclass(frozen=True)
+class BundlePlan:
+    """Two pushes in sequence, judged as one plan; the robot carries out the first leg (see agent.decide)."""
+    first: PushPlan
+    second: PushPlan
+
+    @property
+    def obstacle(self) -> Pos:
+        return self.first.obstacle
+
+    @property
+    def kind(self) -> str:
+        return self.first.kind
+
+    @property
+    def landing(self) -> Pos:
+        return self.first.landing
+
+    @property
+    def steps(self) -> int:
+        return self.first.steps
+
+    @property
+    def before(self) -> FrozenSet[Pos]:
+        return self.first.before
+
+    @property
+    def after(self) -> FrozenSet[Pos]:
+        return self.second.after
+
+    @property
+    def total(self) -> float:
+        return (self.first.walk_in + self.first.push_cost + self.second.walk_in + self.second.push_cost
+                + self.second.walk_on)
+
+
+def bundle_plans(grid: Grid, distance: Callable[[Pos, Pos, FrozenSet[Pos]], float], blocked: FrozenSet[Pos],
+                 firsts: List[PushPlan], eligible_after: Callable[[PushPlan], List[Pos]],
+                 kind_of: Callable[[Pos], Optional[str]], goal: Pos, kappa: float, fee: float, max_steps: int,
+                 unreachable: float) -> List[BundlePlan]:
+    """Every first plan followed by every plan for the next obstacle on the route that its landing leaves behind."""
+    out: List[BundlePlan] = []
+    for p1 in firsts:
+        def kind_of2(c: Pos, p1: PushPlan = p1) -> Optional[str]:
+            return p1.kind if c == p1.landing else kind_of(c)
+        for p2 in candidate_plans(grid, distance, p1.after, eligible_after(p1), kind_of2, p1.end, goal, kappa, fee,
+                                  max_steps, unreachable):
+            out.append(BundlePlan(p1, p2))
+    return sorted(out, key=lambda b: (b.total, b.first.obstacle, b.first.direction, b.first.steps,
+                                      b.second.obstacle, b.second.direction, b.second.steps))

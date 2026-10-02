@@ -61,6 +61,7 @@ The window is the demo; the terminal is a few lines of footnote. `--verbose` bri
 | `single_block` | two rooms, one pallet in the barrier, long way round at the bottom | with 12 robots congestion dominates and pushing can lose |
 | `multi_block_wall` | four obstacles in the barrier (pallets, a crate, a shelf unit) | works: 8 robots, 10 tasks, seed 0: never 1552, rof 1233 |
 | `series_blocks` | two obstacles in a one-cell corridor | neither can be pushed clear: shows "no room" |
+| `complements` | two doorways in series | only a two-step plan sees the saving |
 | `shift` | demand moves half way through | not demo material yet |
 | `random_blocks` | open floor with obstacles anywhere (optional wall strips) | what `scatter` uses; often little to gain unless cluttered |
 | `incidents_room`, `incidents_aisles` | obstructions appear during the run; reports arrive as text | use to explain reports and the safety rule |
