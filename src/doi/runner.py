@@ -4,9 +4,10 @@ from typing import Optional
 
 from src.doi.agent import RobotAgent
 from src.doi.config import SimConfig
+from src.doi.evidence import EvidenceEngine
 from src.doi.metrics import RunResult
 from src.doi.network import Network
-from src.doi.policies import FillPolicy, Shared, make_policy
+from src.doi.policies import CentralPolicy, FillPolicy, HindsightPolicy, Shared, make_policy
 from src.doi.scenarios import Scenario, build_scenario
 from src.doi.world import Drop, Move, Pickup, Return, World
 
@@ -16,13 +17,17 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
     started = time.perf_counter()
     scenario = scenario or build_scenario(cfg)
     policy = policy or make_policy(cfg)
-    shared = Shared()
+    shared = Shared(engine=EvidenceEngine(scenario.grid,
+                                          cfg.unreachable_cost_for(scenario.grid.height, scenario.grid.width)))
     policy.prepare(scenario, cfg, shared)
     world = World(scenario, cfg)
     world.prefill(policy.prefill_set(scenario, cfg))
     network = Network(cfg)
     agents = [RobotAgent(i, scenario, cfg, policy, shared) for i in range(len(scenario.starts))]
     shared.agents = agents
+    for a in agents:
+        for c in sorted(world.filled):
+            a.belief.filled.add(c)
 
     ticks, stalled, idle = 0, False, 0
     for t in range(cfg.max_ticks):
@@ -30,6 +35,9 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
         if not active:
             break
         world.begin_tick(t)
+        if isinstance(policy, CentralPolicy):
+            policy.sync(world, active, t)
+            policy.dispatch(active, t)
         for a in active:
             a.sense(world.observe(a.id, cfg.r_sense), t)
         inbox = network.deliver(t)
@@ -90,4 +98,5 @@ def build_result(cfg, policy, world, network, agents, shared, ticks, stalled, ru
                 "aborts": sum(a.hauler.stats["aborts"] for a in agents)},
         wrong_class_attempts=sum(c["wrong_class_attempts"] for c in world.counters.values()),
         final_stock=dict(world.stock), runtime_ms=runtime_ms,
+        hindsight_buy=policy.hindsight_buy if isinstance(policy, HindsightPolicy) else 0.0,
         trajectory={i: list(p) for i, p in world.trajectory.items()})

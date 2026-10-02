@@ -127,14 +127,24 @@ class Hauler:
             raise NotImplementedError("the approval gate is implemented in Task 15")
         self._launch(t, approval_wait=0)
 
-    def _launch(self, t: int, approval_wait: int) -> None:
+    def assign(self, proposal, t: int) -> None:
+        """Omniscient dispatch (central arm): no stagger, claim or approval gate."""
+        self.proposal = proposal
+        self.offer_tick = t
+        self.todo = [p for p in proposal.pits if p not in self.agent.belief.filled]
+        for p in proposal.pits:
+            self.agent.belief.observe_cell(p, True, t)
+        self._launch(t, approval_wait=0, use_claim=False)
+
+    def _launch(self, t: int, approval_wait: int, use_claim: Optional[bool] = None) -> None:
         a, cfg, b = self.agent, self.agent.cfg, self.agent.belief
+        use_claim = cfg.claim if use_claim is None else use_claim
         sel = select_haul(a, self.proposal.pits)
         if sel is None:
             self.state = HaulState.NONE
             self.proposal = None
             return
-        if cfg.claim:
+        if use_claim:
             self.ticket = b.next_ticket()
             b.claims.issue(self.ticket, Claim(tuple(self.proposal.pits), a.id), t + cfg.lease_ticks)
             self.stats["issued"] += 1

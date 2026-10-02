@@ -130,9 +130,9 @@ class RobotAgent:
                 if idx + 1 >= len(rec.cells):
                     reserved.add((rec.cells[-1], t + 1))
                 for k in range(idx + 1, len(rec.cells)):
-                    reserved.add((rec.cells[k], rec.start_tick + k))
                     if rec.cells[k] != rec.cells[idx]:
                         break
+                    reserved.add((rec.cells[k], rec.start_tick + k))
         horizon = 3 * (self.H + self.W) if self.wait_streak >= 2 else 1
         for cell in self.sensed_cells:
             if cell not in explained or cell in self._prev_sensed:
