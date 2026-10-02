@@ -609,3 +609,49 @@ experiment:
   seed: 42
   runs_per_config: 10
 ```
+
+---
+
+## Decentralised DOI-MAPF simulator (`src/doi/`)
+
+A tick-based, decentralised multi-robot simulator for the Rent-or-Fill (RoF) decision rule: robots decide
+whether, when and by whom a costly, permanent layout edit (filling a pit, clearing an obstruction) is made,
+from partial and delayed information. It sits beside the legacy code and does not modify it.
+
+Three layers:
+
+* **L0** `world.py`: ground truth, move arbitration (vertex, swap and cycle conflicts) and an override log.
+* **L1** `agent.py`, `hauler.py`, `policies.py`: one agent per robot with its own CRDT belief
+  (`crdt.py`, `belief.py`, `evidence.py`), talking only through a lossy, range-limited two-channel
+  `network.py`. The fill decision is a numeric threshold rule.
+* **L2** `llm/`: exception intake and approval-request drafting, run offline; the simulator replays cached
+  outputs. The LLM is never on the decision, claim, planning or traffic path (a test checks the imports).
+
+Run the tests:
+
+```bash
+python -m pytest tests/doi -q
+```
+
+Run one experiment with a small pilot configuration:
+
+```bash
+python experiments/doi_e1_validity.py --quick --jobs 4
+```
+
+Results land in `experiments/results/doi/` (git-ignored). The other scripts are `doi_e2_information.py`,
+`doi_e3_complements.py`, `doi_e4_commitment.py`, `doi_e5_shift.py`, `doi_e7_intake.py`, `doi_e8_gate.py` and
+`doi_e6_scaling.py` (Stage 1, needs a MovingAI warehouse map in `data/maps/`).
+
+LLM intake is configured through environment variables only; keys are never written to files:
+
+```bash
+export OPENAI_API_KEY=...                     # kept in your shell profile
+export DOI_LLM_HOSTED_URL=https://api.openai.com/v1
+export DOI_LLM_HOSTED_MODEL=gpt-4o-mini
+export DOI_LLM_HOSTED_JSON_MODE=1
+python experiments/doi_intake_run.py --model-key hosted --split dev   # prints a cost estimate and asks first
+```
+
+The design, hypotheses and status are in `docs/research/research-design.md`, `docs/research/theory.md`,
+`docs/research/results.md` and `docs/research/prior-art-verification.md`.
