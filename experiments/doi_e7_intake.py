@@ -36,13 +36,13 @@ def main(argv=None) -> None:
     seeds = seed_list(args, first=200)
     if not args.quick and not llm_available():
         print("NOTE: no cached llm:hosted intake results found; that arm is omitted (run doi_intake_run.py first).")
-    base = SimConfig(claim=True, n_robots=12, tasks_per_robot=10, intake_cache=CACHE, p_wrong_class=0.0)
+    base = SimConfig(n_robots=12, tasks_per_robot=10, intake_cache=CACHE, p_wrong_class=0.0)
     df, elapsed = timed_grid(base, axes, ARMS, seeds, out, args.jobs)
     if args.quick:
         full = {k: v for k, v in axes_for(False).items()}
         print(f"projected full E7 runtime: {project_hours(elapsed, n_points(axes), len(seeds), n_points(full), 30, args.jobs):.1f} h")
     write_summary(df, out, ["policy", "axis_scenario", "axis_intake", "axis_scenario_params.p_false"],
-                  ["J_censored", "false_report_cost", "intake_rejected", "fills"])
+                  ["J_censored", "false_report_cost", "intake_rejected", "removals"])
     rof = df[df.policy == "rof"]
     fig, axp = plt.subplots(figsize=(7, 4))
     for scen, g in rof.groupby("axis_scenario"):
@@ -58,8 +58,9 @@ def main(argv=None) -> None:
     save_fig(fig, out, "e7_false_report_cost.png")
 
     print(f"\nE7 / H7  (n seeds = {len(seeds)}; seeds {seeds[0]}..{seeds[-1]})")
-    bad = df[(df["unconfirmed_hauls"] > 0) | (df["false_report_hauls"] > 0)]
-    print(f"H7a unconfirmed_hauls == 0 and false_report_hauls == 0 in every run ({len(df)} runs): {verdict(len(bad) == 0)}")
+    bad = df[df["wrong_class_attempts"] > 0]
+    print(f"H7a no push attempted on an obstacle that needs a human, in every run ({len(df)} runs): "
+          f"{verdict(len(bad) == 0)}  (needs p_wrong_class = 0, as set here)")
     keys = ["axis_scenario", "axis_scenario_params.p_report", "axis_scenario_params.p_false"]
     for intake in [i for i in axes["intake"] if i != "oracle"]:
         a, b, m = paired_diff(rof, keys, rof["axis_intake"] == intake, rof["axis_intake"] == "oracle", "J_censored")

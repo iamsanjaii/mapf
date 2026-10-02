@@ -6,7 +6,6 @@ from src.doi.scenarios import build_scenario
 from src.doi.llm.client import FakeLLMClient, OpenAICompatClient
 from src.doi.llm.intake import (parse_and_validate, run_intake, cache_key, IntakeCache, to_record,
                                 PROMPT_VERSION)
-from src.doi.llm.drafter import draft_request
 
 NAMES = ("aisle 2 bay 3", "north door")
 GOOD = json.dumps({"location": "aisle 2 bay 3", "kind": "pallet", "class": "robot_clearable",
@@ -55,14 +54,6 @@ def test_to_record_locates_cells():
     client = FakeLLMClient(lambda system, user: GOOD)
     rec = to_record(run_intake("x", NAMES, client), "r0", 3, s)
     assert rec.cells == ((3, 2),) and rec.node == 3 and rec.cls == "robot_clearable"
-
-
-def test_drafter_numbers_are_not_generated():
-    rec = ObstructionRecord("r0", 0, "north door", ((2, 10),), "pallet", "robot_clearable", 1, 0.9, "fallen pallet")
-    liar = FakeLLMClient(lambda system, user: "Approve now, evidence is 9999 and cost 0.")
-    req = draft_request(((2, 10),), 16.0, 9.0, 2, 6, [rec], client=liar)
-    assert "16.0" in req.text and "9.0" in req.text and "2 of 6" in req.text
-    assert "9999" not in req.text and not any(ch.isdigit() for ch in req.reason)
 
 
 def test_openai_compat_request_shape(monkeypatch):

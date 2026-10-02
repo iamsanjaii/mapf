@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from src.doi.config import SimConfig
-from src.doi.paths import dream_path
+from src.doi.paths import bfs_dist_map, passable_fn
 
 Pos = Tuple[int, int]
 
@@ -19,8 +19,9 @@ class RunResult:
     throughput: float
     moves: int
     waits: int
-    carried_steps: int
-    fills: int
+    push_steps: int
+    push_cost: float
+    removals: int
     fee_total: float
     unfinished_tasks: int
     stalled: bool
@@ -28,26 +29,19 @@ class RunResult:
     messages: Dict[str, int]
     traffic_messages: Dict[str, int]
     overrides: int
-    fill_ticks: List[int] = field(default_factory=list)
     triggers: List[dict] = field(default_factory=list)
-    edits: List[dict] = field(default_factory=list)
+    pushes: List[dict] = field(default_factory=list)          # one entry per push run
+    push_rejected: int = 0
     plan_infos: List[Any] = field(default_factory=list)
-    filled_at: Dict[Pos, int] = field(default_factory=dict)
     appeared_at: Dict[int, int] = field(default_factory=dict)
-    wasted_haul_cost: float = 0.0
     wrong_class_attempts: int = 0
-    unconfirmed_hauls: int = 0
-    false_report_hauls: int = 0
-    claims: Dict[str, int] = field(default_factory=lambda: {"issued": 0, "lost": 0, "aborts": 0})
-    approvals: Dict[str, int] = field(default_factory=lambda: {
-        "requested": 0, "approved": 0, "vetoed": 0, "timeout_approved": 0, "deferred": 0})
     intake: Dict[str, int] = field(default_factory=lambda: {"reports": 0, "records": 0, "rejected": 0})
-    final_stock: Dict[Pos, int] = field(default_factory=dict)
     hindsight_buy: float = 0.0
     runtime_ms: float = 0.0
     trajectory: Dict[int, List[Pos]] = field(default_factory=dict)
+    obstacle_trace: List[Dict[Pos, str]] = field(default_factory=list)   # obstacles after t ticks
+    tick_cost: List[float] = field(default_factory=list)                 # fleet cost paid in each tick
     scenario: Any = None
-    carry_trace: Dict[int, List[bool]] = field(default_factory=dict)
 
 
 def _unreachable(result: RunResult) -> float:
@@ -55,77 +49,54 @@ def _unreachable(result: RunResult) -> float:
     return SimConfig(**result.cfg).unreachable_cost_for(g.height, g.width)
 
 
-def _truth_filled(result: RunResult, t: int) -> FrozenSet[Pos]:
-    return frozenset(p for p, ft in result.filled_at.items() if ft <= t)
+def _obstacles_at(result: RunResult, tick: int) -> FrozenSet[Pos]:
+    trace = result.obstacle_trace
+    return frozenset(trace[min(tick, len(trace) - 1)]) if trace else frozenset()
 
 
-def _incident_cells_by(result: RunResult, t: int) -> FrozenSet[Pos]:
-    cells = set()
-    for inc in result.scenario.incidents:
-        at = result.appeared_at.get(inc.oid)
-        if at is not None and at <= t:
-            cells.update(inc.cells)
-    return frozenset(cells)
+def _dist(grid, closed: FrozenSet[Pos], start: Pos, goal: Pos, unreachable: float) -> float:
+    return float(bfs_dist_map(passable_fn(grid, closed=closed), start, grid.height, grid.width)
+                 .get(goal, unreachable))
 
 
 def stale_detour_cost(result: RunResult, scenario, cfg: SimConfig) -> float:
-    """Extra steps planned because the robot's belief about edits lagged the truth."""
-    U = cfg.unreachable_cost_for(scenario.grid.height, scenario.grid.width)
+    """Extra steps planned because the robot's belief about the obstacles lagged the truth."""
+    U = _unreachable(result)
     total = 0.0
     for p in result.plan_infos:
-        truth = _truth_filled(result, p.tick)
-        if truth == p.belief_filled:
-            continue
-        pits = scenario.pits if scenario.family != "D" else sorted(p.belief_blocked | truth)
-        d_truth = dream_path(scenario.grid, pits, truth, p.start, p.goal, U).d_block
-        total += max(0, p.d_block - d_truth)
+        truth = _obstacles_at(result, p.tick)
+        total += max(0.0, p.d_block - _dist(scenario.grid, truth, p.start, p.goal, U))
     return float(total)
 
 
 def false_report_cost(result: RunResult, scenario, cfg: SimConfig) -> float:
-    """Extra steps planned around cells believed blocked that were never blocked (spec 7.4)."""
-    U = cfg.unreachable_cost_for(scenario.grid.height, scenario.grid.width)
-    static = frozenset(scenario.pits)
+    """Extra steps planned around cells believed blocked that held no obstacle at the time."""
+    U = _unreachable(result)
     total = 0.0
     for p in result.plan_infos:
-        real = static | _incident_cells_by(result, p.tick)
-        phantom = frozenset(c for c in p.belief_blocked if c not in real)
+        phantom = p.belief_blocked - _obstacles_at(result, p.tick)
         if not phantom:
             continue
-        d_without = dream_path(scenario.grid, sorted(p.belief_blocked - phantom), p.belief_filled,
-                               p.start, p.goal, U, p.hard_blocked - phantom).d_block
-        total += max(0, p.d_block - d_without)
+        without = _dist(scenario.grid, p.belief_blocked - phantom, p.start, p.goal, U)
+        total += max(0.0, p.d_block - without)
     return float(total)
 
 
-def false_report_hauls(result: RunResult, scenario) -> int:
-    real = set(scenario.pits) | {c for inc in scenario.incidents for c in inc.cells}
-    return sum(1 for trig in result.triggers if any(c not in real for c in trig["pits"]))
+def collateral_cost(result: RunResult, scenario, cfg: SimConfig) -> float:
+    """Detour paid because a pushed obstacle was parked where it blocks a route, measured on the true map.
 
-
-def true_rent_at_triggers(result: RunResult) -> List[Dict[str, float]]:
-    """Rent a perfectly informed ledger would hold at each trigger, and the ledger's coverage of it."""
-    scenario, U = result.scenario, _unreachable(result)
-    out = []
-    for trig in result.triggers:
-        tick = trig["tick"]
-        filled_now = _truth_filled(result, tick)
-        target = tuple(sorted(set(trig["pits"]) - filled_now))
-        true_rent = 0.0
-        for info in result.plan_infos:
-            if info.tick > tick:
-                continue
-            pits = scenario.pits if scenario.family != "D" else sorted(
-                set(scenario.pits) | _incident_cells_by(result, info.tick))
-            d = dream_path(scenario.grid, pits, _truth_filled(result, info.tick), info.start, info.goal, U)
-            residual = tuple(sorted(set(d.bundle) - filled_now))
-            if residual and residual == target:
-                true_rent += d.rent
-        row = dict(trig)
-        row["true_rent"] = float(true_rent)
-        row["coverage"] = trig["known"] / true_rent if true_rent > 0 else float("nan")
-        out.append(row)
-    return out
+    For each planned task: route length with the obstacles as they stood, minus the route length if the obstacles
+    that earlier pushes had left on a landing cell were not there."""
+    U = _unreachable(result)
+    total = 0.0
+    for p in result.plan_infos:
+        now = _obstacles_at(result, p.tick)
+        parked = frozenset(run["landing"] for run in result.pushes if run["end_tick"] < p.tick) & now
+        if not parked:
+            continue
+        total += max(0.0, _dist(scenario.grid, now, p.start, p.goal, U)
+                     - _dist(scenario.grid, now - parked, p.start, p.goal, U))
+    return float(total)
 
 
 def hindsight_ratios(alg: RunResult, hindsight: RunResult, free: RunResult) -> Dict[str, float]:
@@ -144,36 +115,29 @@ def _mean(xs: List[float]) -> float:
 
 def summary_row(result: RunResult, ratios: Optional[Dict[str, float]] = None,
                 pod: Optional[float] = None, cheap: bool = False) -> dict:
-    """`cheap` skips the metrics that recompute paths per planned task (needed at Stage 1 scale)."""
+    """`cheap` skips the metrics that recompute paths per planned task (needed at large scale)."""
     cfg = SimConfig(**result.cfg)
     scenario = result.scenario
     ratios = ratios or {}
     nan = float("nan")
+    full = scenario is not None and not cheap
     return {
         "policy": result.policy, "seed": cfg.seed, "scenario": cfg.scenario,
         "family": scenario.family if scenario is not None else "", "n_robots": cfg.n_robots,
         "r_comm": cfg.r_comm, "r_traffic": cfg.r_traffic, "loss": cfg.loss, "latency": cfg.latency,
-        "theta": cfg.theta, "claim": cfg.claim, "gate": cfg.gate, "intake": cfg.intake, "window": cfg.window,
+        "theta": cfg.theta, "intake": cfg.intake,
         "J": result.J, "J_censored": result.J_censored, "delay": result.delay,
-        "throughput": result.throughput, "fills": result.fills, "carried_steps": result.carried_steps,
-        "wasted_haul_cost": result.wasted_haul_cost, "stalled": result.stalled,
+        "throughput": result.throughput, "removals": result.removals, "push_steps": result.push_steps,
+        "push_rejected": result.push_rejected, "stalled": result.stalled,
         "unfinished_tasks": result.unfinished_tasks, "ticks": result.ticks,
         "broadcasts": result.messages["broadcasts"], "transmissions": result.messages["transmissions"],
         "dropped": result.messages["dropped"], "message_units": result.messages["units"],
         "traffic_units": result.traffic_messages["units"],
         "overrides_per_1000": 1000.0 * result.overrides / max(1, result.ticks),
-        "stale_detour_cost": stale_detour_cost(result, scenario, cfg) if scenario is not None and not cheap else nan,
-        "false_report_cost": false_report_cost(result, scenario, cfg) if scenario is not None and not cheap else nan,
-        "mean_coverage": _mean([r["coverage"] for r in true_rent_at_triggers(result)])
-        if scenario is not None and not cheap else nan,
-        "mean_B_est": _mean([e["B_est"] for e in result.edits]),
-        "mean_B_real": _mean([e["B_real"] for e in result.edits]),
-        "mean_approval_wait": _mean([e["approval_wait"] for e in result.edits]),
-        "claims_issued": result.claims["issued"], "claims_lost": result.claims["lost"],
-        "aborts": result.claims["aborts"], "unconfirmed_hauls": result.unconfirmed_hauls,
-        "false_report_hauls": false_report_hauls(result, scenario) if scenario is not None else 0,
+        "stale_detour_cost": stale_detour_cost(result, scenario, cfg) if full else nan,
+        "false_report_cost": false_report_cost(result, scenario, cfg) if full else nan,
+        "collateral_cost": collateral_cost(result, scenario, cfg) if full else nan,
         "wrong_class_attempts": result.wrong_class_attempts,
-        "approvals_requested": result.approvals["requested"], "approvals_vetoed": result.approvals["vetoed"],
         "intake_records": result.intake["records"], "intake_rejected": result.intake["rejected"],
         "runtime_ms": result.runtime_ms,
         "hr": ratios.get("hr", nan), "hr_av": ratios.get("hr_av", nan), "pod": pod if pod is not None else nan,

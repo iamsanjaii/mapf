@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.doi.config import SimConfig
-from src.doi.metrics import hindsight_ratios, summary_row, true_rent_at_triggers
+from src.doi.metrics import hindsight_ratios, summary_row
 from src.doi.oracle import buy_lb
 from src.doi.runner import run_episode
 from src.doi.scenarios import build_scenario
@@ -35,27 +35,11 @@ def extra_columns(res, scenario, cfg, cheap: bool = False) -> dict:
     """Per-run quantities the experiment analyses need beyond summary_row."""
     rents = [i.rent for i in res.plan_infos]
     out = {"rent_total": float(sum(rents)), "r_max": float(max(rents)) if rents else 0.0,
-           "n_triggers": len(res.triggers), "n_edits": len(res.edits),
-           "buy_lb_total": float("nan"), "min_true_rent_after_first_fill": float("nan"),
-           "pred_gate_cost": 0.0, "hindsight_buy": float(res.hindsight_buy),
-           "n_prefilled": sum(1 for v in res.filled_at.values() if v < 0)}
+           "n_triggers": len(res.triggers), "n_pushes": res.removals, "buy_lb_total": float("nan"),
+           "hindsight_buy": float(res.hindsight_buy)}
     if scenario.family != "D" and not cheap:
         finite = [v for v in buy_lb(scenario, cfg).values() if math.isfinite(v)]
         out["buy_lb_total"] = float(sum(finite))
-    if len(res.triggers) >= 2 and not cheap:
-        trig = true_rent_at_triggers(res)
-        later = [t["true_rent"] for t in trig[1:]]
-        out["min_true_rent_after_first_fill"] = float(min(later))
-    pred = 0.0
-    for e in res.edits:
-        match = [t for t in res.triggers if t["tick"] == e["trigger_tick"] and e["pit"] in t["pits"]]
-        if not match or e["approval_wait"] <= 0:
-            continue
-        t = match[0]
-        first = min((i.tick for i in res.plan_infos if i.rent > 0 and i.bundle == tuple(t["pits"])),
-                    default=t["tick"])
-        pred += (t["known"] / max(1, t["tick"] - first)) * e["approval_wait"]
-    out["pred_gate_cost"] = float(pred)
     return out
 
 

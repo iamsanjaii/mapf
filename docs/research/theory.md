@@ -4,6 +4,13 @@ Support for the experiments, not the headline (spec section 1.6). Each propositi
 assumptions, gives a proof or a sketch, and names the simulator quantity that tests it. Where a bound
 needs an assumption the simulator does not enforce, the gap is stated.
 
+> **Scope note (2026-10-02).** These propositions were written for the earlier pit-and-kit model, where one
+> "edit" has a purchase cost `B`. In the push model `B` is the price of a push run (walk, push steps at
+> `kappa` times the obstacle's weight, fee, walk on, over the ideal route). The ski-rental argument only uses
+> "rent paid so far" against "price", so P1 to P4 carry over in form. Two things are new and are **not**
+> covered by the proofs: a pushed obstacle can land on a route and create new rent (collateral), and the
+> price of a push depends on where the robot is. Treat the bounds below as the intended shape, not a result.
+
 ## Setting and notation
 
 One permanent edit (a "pit"), tasks indexed by `t = 1, 2, ..., T`.

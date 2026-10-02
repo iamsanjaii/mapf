@@ -39,8 +39,8 @@ def test_config_validation():
     with pytest.raises(ValueError):
         SimConfig(intake="gpt")
     with pytest.raises(ValueError):
-        SimConfig(window=0)
-    SimConfig(intake="llm:hosted", policy="free", window=50)
+        SimConfig(push_max=0)
+    SimConfig(intake="llm:hosted", policy="free", push_max=3)
     assert SimConfig().replace(seed=3).seed == 3
     assert SimConfig().unreachable_cost_for(15, 21) == 144.0
     assert SimConfig(unreachable_cost=50.0).unreachable_cost_for(15, 21) == 50.0

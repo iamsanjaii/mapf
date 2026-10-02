@@ -13,9 +13,9 @@ from src.doi.stats import spearman
 
 ARMS = ["rof", "rof_local", "central", "never"]
 INF = float("inf")
-AXES = {"scenario": ["single_pit", "multi_pit_wall"], "r_comm": [0.0, 2.0, 4.0, 8.0, 16.0, INF],
+AXES = {"scenario": ["single_block", "multi_block_wall"], "r_comm": [0.0, 2.0, 4.0, 8.0, 16.0, INF],
         "loss": [0.0, 0.2, 0.5], "latency": [1, 3], "n_robots": [6, 12, 24]}
-AXES_QUICK = {"scenario": ["single_pit"], "r_comm": [0.0, 8.0, INF], "loss": [0.0], "latency": [1],
+AXES_QUICK = {"scenario": ["single_block"], "r_comm": [0.0, 8.0, INF], "loss": [0.0], "latency": [1],
               "n_robots": [6]}
 
 
@@ -25,18 +25,17 @@ def main(argv=None) -> None:
     out = out_dir(args, "e2")
     os.makedirs(out, exist_ok=True)
     seeds = seed_list(args)
-    df, elapsed = timed_grid(SimConfig(claim=True), axes, ARMS, seeds, out, args.jobs)
+    df, elapsed = timed_grid(SimConfig(), axes, ARMS, seeds, out, args.jobs)
     if args.quick:
         print(f"projected full E2 runtime: {project_hours(elapsed, n_points(axes), len(seeds), n_points(AXES), 30, args.jobs):.1f} h")
     ax = axis_cols(df)
     write_summary(df, out, ["policy", "axis_scenario", "axis_r_comm", "axis_loss"],
-                  ["hr_av", "pod", "mean_coverage", "J_censored", "message_units"])
+                  ["hr_av", "pod", "J_censored", "message_units"])
     rof = df[df.policy == "rof"].copy()
     rof["x"] = rof["axis_r_comm"].map(finite_x)
 
     for name, col, ylabel in [("e2_hrav_vs_range.png", "hr_av", "median HR_av"),
-                              ("e2_pod_vs_range.png", "pod", "median PoD = J_RoF / J_central"),
-                              ("e2_coverage_vs_range.png", "mean_coverage", "median coverage at trigger")]:
+                              ("e2_pod_vs_range.png", "pod", "median PoD = J_RoF / J_central")]:
         fig, axp = plt.subplots(figsize=(6.5, 4))
         for loss, g in rof.groupby("axis_loss"):
             m = g.groupby("x")[col].median()

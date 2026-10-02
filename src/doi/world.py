@@ -1,14 +1,14 @@
-"""Ground-truth world: physics, move arbitration, incidents, edits, sensing and the override log."""
+"""Ground-truth world: physics, move arbitration, pushing, incidents, sensing and the override log."""
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, Iterable, List, Set, Tuple, Union
+from typing import Dict, FrozenSet, Iterable, List, Optional, Set, Tuple, Union
 
 from src.doi.config import SimConfig
+from src.doi.kinds import weight
 from src.doi.scenarios import Scenario
 from src.environment.grid import CellType
 
 Pos = Tuple[int, int]
-COUNTER_KEYS = ("moves", "carried_steps", "waits", "pickups", "drops", "rejected_drops",
-                "wrong_class_attempts")
+COUNTER_KEYS = ("moves", "waits", "push_steps", "push_rejected", "wrong_class_attempts")
 
 
 @dataclass(frozen=True)
@@ -22,21 +22,12 @@ class Wait:
 
 
 @dataclass(frozen=True)
-class Pickup:
-    pass
+class Push:
+    """Step into the neighbouring cell `to`, sliding the obstacle there one cell onward."""
+    to: Pos
 
 
-@dataclass(frozen=True)
-class Drop:
-    pit: Pos
-
-
-@dataclass(frozen=True)
-class Return:
-    pass
-
-
-Action = Union[Move, Wait, Pickup, Drop, Return]
+Action = Union[Move, Wait, Push]
 
 
 @dataclass(frozen=True)
@@ -45,15 +36,15 @@ class ActionResult:
     reason: str
     pos: Pos
     blocked_ticks: int
-    carrying: bool
 
 
 @dataclass(frozen=True)
 class Observation:
-    filled_pits: FrozenSet[Pos]
     robot_cells: FrozenSet[Pos]
-    blocked_cells: FrozenSet[Pos]
-    scanned: FrozenSet[Pos]
+    blocked_cells: FrozenSet[Pos]          # removable obstacles within sensing range
+    kinds: Tuple[Tuple[Pos, str], ...]     # their kinds
+    clearable: FrozenSet[Pos]              # those that are plainly ordinary obstacles a robot may push
+    scanned: FrozenSet[Pos]                # cells seen to be free
 
 
 def _manhattan(a: Pos, b: Pos) -> int:
@@ -67,45 +58,46 @@ class World:
         self.grid = scenario.grid.copy()
         n = len(scenario.starts)
         self.pos: Dict[int, Pos] = {i: scenario.starts[i] for i in range(n)}
-        self.carrying: Dict[int, bool] = {i: False for i in range(n)}
         self.blocked_ticks: Dict[int, int] = {i: 0 for i in range(n)}
-        self.stock: Dict[Pos, int] = dict(scenario.depots)
-        self.filled: Set[Pos] = set()
-        self.filled_at: Dict[Pos, int] = {}
-        self.blocked: Set[Pos] = set(scenario.pits)
+        self.obstacles: Dict[Pos, str] = dict(scenario.obstacles)
+        self.plain: Set[Pos] = set(self.obstacles)          # scenario obstacles; incident obstructions are not plain
+        for c in self.obstacles:
+            self.grid.set(c[0], c[1], CellType.OBSTACLE)
         self.appeared_at: Dict[int, int] = {}
         self.overrides = 0
-        self.fills = 0
+        self.removals = 0                       # push runs
+        self.push_cost = 0.0                    # sum of kappa * weight over push steps
+        self.push_log: List[dict] = []          # one entry per run
+        self._open_run: Dict[int, dict] = {}
         self.trajectory: Dict[int, List[Pos]] = {i: [self.pos[i]] for i in range(n)}
-        self.carry_trace: Dict[int, List[bool]] = {i: [False] for i in range(n)}
+        self.obstacle_trace: List[Dict[Pos, str]] = [dict(self.obstacles)]
+        self.tick_cost: List[float] = []
         self.counters: Dict[int, Dict[str, int]] = {i: {k: 0 for k in COUNTER_KEYS} for i in range(n)}
         self.incident_cls: Dict[Pos, str] = {c: inc.cls for inc in scenario.incidents for c in inc.cells}
         self._suppressed: Set[int] = set()
 
-    def prefill(self, pits: Iterable[Pos]) -> None:
-        cells = set(pits)
+    def prefill(self, cells: Iterable[Pos]) -> None:
+        """Remove obstacles at tick 0 (benchmark arms): the obstacle vanishes, it is not relocated."""
+        gone = set(cells)
         for inc in self.scenario.incidents:
-            if cells & set(inc.cells):
+            if gone & set(inc.cells):
                 self._suppressed.add(inc.oid)
-                for c in inc.cells:
-                    self.filled.add(c)
-                    self.filled_at[c] = -1
-        for p in sorted(cells & set(self.scenario.pits)):
-            self.grid.set(p[0], p[1], CellType.FREE)
-            self.blocked.discard(p)
-            self.filled.add(p)
-            self.filled_at[p] = -1
+        for c in sorted(gone & set(self.obstacles)):
+            del self.obstacles[c]
+            self.plain.discard(c)
+            self.grid.set(c[0], c[1], CellType.FREE)
+        self.obstacle_trace[0] = dict(self.obstacles)
 
     def begin_tick(self, t: int) -> None:
         occupied = set(self.pos.values())
         for inc in sorted(self.scenario.incidents, key=lambda i: i.oid):
             if inc.oid in self.appeared_at or inc.oid in self._suppressed or inc.appear_tick > t:
                 continue
-            if any(c in occupied for c in inc.cells):
+            if any(c in occupied or c in self.obstacles for c in inc.cells):
                 continue
             for c in inc.cells:
-                self.grid.set(c[0], c[1], CellType.PIT)
-                self.blocked.add(c)
+                self.obstacles[c] = inc.kind
+                self.grid.set(c[0], c[1], CellType.OBSTACLE)
             self.appeared_at[inc.oid] = t
 
     def active_ids(self) -> List[int]:
@@ -123,9 +115,9 @@ class World:
                 if self.grid.get(r, c) != CellType.OBSTACLE:
                     scanned.add((r, c))
         others = frozenset(p for j, p in self.pos.items() if j != robot_id and _manhattan(me, p) <= r_sense)
-        return Observation(filled_pits=frozenset(c for c in self.filled if _manhattan(me, c) <= r_sense),
-                           robot_cells=others,
-                           blocked_cells=frozenset(c for c in self.blocked if _manhattan(me, c) <= r_sense),
+        near = sorted((c, k) for c, k in self.obstacles.items() if _manhattan(me, c) <= r_sense)
+        return Observation(robot_cells=others, blocked_cells=frozenset(c for c, _ in near),
+                           kinds=tuple(near), clearable=frozenset(c for c, _ in near if c in self.plain),
                            scanned=frozenset(scanned))
 
     def _key(self, i: int) -> Tuple[int, int]:
@@ -192,6 +184,20 @@ class World:
         reasons: Dict[int, str] = {}
         moved_ok: Set[int] = set()
         blocked_now: Set[int] = set()
+        cost = 0.0
+
+        for i in sorted((i for i, a in actions.items() if i in self.pos and isinstance(a, Push)), key=self._key):
+            reason = self._push(i, actions[i].to, t)
+            if reason:
+                reasons[i] = reason
+                blocked_now.add(i)
+                self.counters[i]["push_rejected"] += 1
+            else:
+                moved_ok.add(i)
+                kind_w = self._open_run[i]["weight"]
+                step = self.cfg.kappa * kind_w
+                cost += step + (self.cfg.fee if self._open_run[i]["steps"] == 1 else 0.0)
+                self.push_cost += step
 
         legal: Dict[int, Pos] = {}
         for i, a in sorted(actions.items()):
@@ -209,28 +215,23 @@ class World:
             reasons[i] = reason
             blocked_now.add(i)
             self.overrides += 1
-        survivors = {i: to for i, to in legal.items() if i not in removed}
-        for i, to in survivors.items():
+        for i, to in legal.items():
+            if i in removed:
+                continue
             self.pos[i] = to
             moved_ok.add(i)
             self.counters[i]["moves"] += 1
-            if self.carrying[i]:
-                self.counters[i]["carried_steps"] += 1
+            cost += 1.0
 
         for i in self.pos:
             self.blocked_ticks[i] = self.blocked_ticks[i] + 1 if i in blocked_now else 0
         for i in actions:
             if i in self.pos and i not in moved_ok:
                 self.counters[i]["waits"] += 1
-
-        order = sorted((i for i in actions if i in self.pos), key=self._key)
-        for i in order:
-            if isinstance(actions[i], Pickup):
-                reasons[i] = self._pickup(i)
-        self._drops({i: actions[i].pit for i in order if isinstance(actions[i], Drop)}, t, reasons)
-        for i in order:
-            if isinstance(actions[i], Return):
-                reasons[i] = self._return(i)
+                cost += 1.0
+        for i, run in list(self._open_run.items()):       # a run ends when its robot does anything but push on
+            if run["end_tick"] != t:
+                del self._open_run[i]
 
         if self.cfg.debug_checks:
             self._check(old_pos)
@@ -239,68 +240,57 @@ class World:
             if i not in self.pos:
                 continue
             reason = reasons.get(i, "")
-            results[i] = ActionResult(reason == "", reason, self.pos[i], self.blocked_ticks[i], self.carrying[i])
+            results[i] = ActionResult(reason == "", reason, self.pos[i], self.blocked_ticks[i])
         for i in self.pos:
             self.trajectory[i].append(self.pos[i])
-            self.carry_trace[i].append(self.carrying[i])
+        self.obstacle_trace.append(dict(self.obstacles))
+        self.tick_cost.append(cost)
         return results
 
-    def _pickup(self, i: int) -> str:
-        if self.carrying[i]:
-            return "has_bag"
+    def _push(self, i: int, to: Pos, t: int) -> str:
+        """Slide the obstacle at `to` one cell further from robot i and move the robot in. '' on success."""
         p = self.pos[i]
-        if p not in self.stock:
-            return "not_depot"
-        if self.stock[p] <= 0:
-            return "empty"
-        self.stock[p] -= 1
-        self.carrying[i] = True
-        self.counters[i]["pickups"] += 1
+        if _manhattan(p, to) != 1:
+            return "not_adjacent"
+        kind = self.obstacles.get(to)
+        if kind is None:
+            return "no_obstacle"
+        if self.incident_cls.get(to) == "needs_human":
+            self.counters[i]["wrong_class_attempts"] += 1
+            return "needs_human"
+        d = (to[0] - p[0], to[1] - p[1])
+        beyond = (to[0] + d[0], to[1] + d[1])
+        if not self.grid.in_bounds(beyond[0], beyond[1]) or not self.grid.is_passable(beyond[0], beyond[1]):
+            return "no_room"
+        if beyond in self.pos.values():
+            return "no_room"
+        del self.obstacles[to]
+        self.obstacles[beyond] = kind
+        self.grid.set(to[0], to[1], CellType.FREE)
+        self.grid.set(beyond[0], beyond[1], CellType.OBSTACLE)
+        clearable = to in self.plain or self.incident_cls.get(to) == "robot_clearable"
+        if to in self.incident_cls:
+            self.incident_cls[beyond] = self.incident_cls.pop(to)
+        if clearable:                                    # an obstacle that has just been pushed is plainly clearable
+            self.plain.discard(to)
+            self.plain.add(beyond)
+        self.pos[i] = to
+        self.counters[i]["moves"] += 1
+        self.counters[i]["push_steps"] += 1
+        run = self._open_run.get(i)
+        if run is not None and run["dir"] == d and run["landing"] == to and run["end_tick"] == t - 1:
+            run["steps"] += 1
+            run["landing"], run["end_tick"] = beyond, t
+            self.push_log[run["index"]].update(landing=beyond, end_tick=t, steps=run["steps"])
+        else:
+            self.removals += 1
+            run = {"dir": d, "landing": beyond, "end_tick": t, "steps": 1, "weight": weight(kind),
+                   "index": len(self.push_log)}
+            self._open_run[i] = run
+            self.push_log.append({"robot": i, "kind": kind, "origin": to, "landing": beyond, "start_tick": t,
+                                  "end_tick": t, "steps": 1})
+        run["weight"] = weight(kind)
         return ""
-
-    def _return(self, i: int) -> str:
-        if not self.carrying[i]:
-            return "no_bag"
-        p = self.pos[i]
-        if p not in self.stock:
-            return "not_depot"
-        self.stock[p] += 1
-        self.carrying[i] = False
-        return ""
-
-    def _drops(self, drops: Dict[int, Pos], t: int, reasons: Dict[int, str]) -> None:
-        candidates: Dict[Pos, List[int]] = {}
-        for i, pit in drops.items():
-            reason = ""
-            if not self.carrying[i]:
-                reason = "no_bag"
-            elif _manhattan(self.pos[i], pit) != 1:
-                reason = "not_adjacent"
-            elif pit in self.filled:
-                reason = "already_filled"
-            elif pit not in self.blocked:
-                reason = "not_blocked"
-            elif self.incident_cls.get(pit) == "needs_human":
-                reason = "needs_human"
-                self.counters[i]["wrong_class_attempts"] += 1
-            if reason:
-                reasons[i] = reason
-                self.counters[i]["rejected_drops"] += 1
-            else:
-                candidates.setdefault(pit, []).append(i)
-        for pit, group in sorted(candidates.items()):
-            winner = min(group, key=self._key)
-            for i in group:
-                if i != winner:
-                    reasons[i] = "lost_priority"
-                    self.counters[i]["rejected_drops"] += 1
-            self.grid.set(pit[0], pit[1], CellType.FREE)
-            self.blocked.discard(pit)
-            self.filled.add(pit)
-            self.filled_at[pit] = t
-            self.carrying[winner] = False
-            self.counters[winner]["drops"] += 1
-            self.fills += 1
 
     def _check(self, old_pos: Dict[int, Pos]) -> None:
         cells = list(self.pos.values())

@@ -614,18 +614,34 @@ experiment:
 
 ## Decentralised DOI-MAPF simulator (`src/doi/`)
 
-A tick-based, decentralised multi-robot simulator for the Rent-or-Fill (RoF) decision rule: robots decide
-whether, when and by whom a costly, permanent layout edit (filling a pit, clearing an obstruction) is made,
-from partial and delayed information. It sits beside the legacy code and does not modify it.
+**Plain-language explanation of this part: [src/doi/README.md](src/doi/README.md).**
+
+A tick-based, decentralised multi-robot simulator for the Rent-or-Push decision rule: robots decide whether,
+when and by whom a removable obstacle (a pallet, a crate, a shelf unit) is pushed out of the way rather than
+walked round, from partial and delayed information. It sits beside the legacy code and does not modify it.
 
 Three layers:
 
-* **L0** `world.py`: ground truth, move arbitration (vertex, swap and cycle conflicts) and an override log.
-* **L1** `agent.py`, `hauler.py`, `policies.py`: one agent per robot with its own CRDT belief
+* **L0** `world.py`: ground truth, move arbitration (vertex, swap and cycle conflicts), pushing and an override log.
+* **L1** `agent.py`, `pusher.py`, `policies.py`: one agent per robot with its own CRDT belief
   (`crdt.py`, `belief.py`, `evidence.py`), talking only through a lossy, range-limited two-channel
-  `network.py`. The fill decision is a numeric threshold rule.
-* **L2** `llm/`: exception intake and approval-request drafting, run offline; the simulator replays cached
-  outputs. The LLM is never on the decision, claim, planning or traffic path (a test checks the imports).
+  `network.py`. The push decision is a numeric threshold rule.
+* **L2** `llm/`: exception intake, run offline; the simulator replays cached outputs. The LLM is never on the
+  decision, planning or traffic path (a test checks the imports).
+
+See it run (opens a window with play/pause, restart, speed and scrub controls and a rent meter that shows
+detour cost climbing towards the price of pushing), or build your own map:
+
+```bash
+python run_doi.py --play                      # type the grid size, robots and number of L, C, S
+python run_doi.py --demo scatter              # obstacles anywhere, one start and one goal per robot
+python run_doi.py --sim toy                  # simulation only, a few lines of text
+python run_doi.py --sim fleet                # 8 robots, 4 obstacles in a barrier
+python run_doi.py --demo toy                 # never vs rof side by side, short table
+python run_doi.py --build                    # set the map and fleet interactively, preview, then run
+python run_doi.py --demo toy --html toy.html # self-contained player for any browser
+python run_doi.py --guide                    # every flag in plain language (--verbose: full text output)
+```
 
 Run the tests:
 
@@ -636,12 +652,11 @@ python -m pytest tests/doi -q
 Run one experiment with a small pilot configuration:
 
 ```bash
-python experiments/doi_e1_validity.py --quick --jobs 4
+python experiments/doi_e2_information.py --quick --jobs 4
 ```
 
-Results land in `experiments/results/doi/` (git-ignored). The other scripts are `doi_e2_information.py`,
-`doi_e3_complements.py`, `doi_e4_commitment.py`, `doi_e5_shift.py`, `doi_e7_intake.py`, `doi_e8_gate.py` and
-`doi_e6_scaling.py` (Stage 1, needs a MovingAI warehouse map in `data/maps/`).
+Results land in `experiments/results/doi/` (git-ignored). The other script is `doi_e7_intake.py`.
+The earlier experiments on the pit model were removed with it; see `docs/research/results.md`.
 
 LLM intake is configured through environment variables only; keys are never written to files:
 

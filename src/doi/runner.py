@@ -11,11 +11,10 @@ from src.doi.metrics import RunResult
 from src.doi.crdt import ObstructionRecord
 from src.doi.incidents import location_names, locate, render_report, report_rng
 from src.doi.network import Network
-from src.doi.policies import CentralPolicy, FillPolicy, HindsightPolicy, Shared, make_policy
+from src.doi.policies import CentralPolicy, HindsightPolicy, PushPolicy, Shared, make_policy
 from src.doi.scenarios import Scenario, build_scenario
 from src.doi.rng import u01
-from src.doi.supervisor import Supervisor
-from src.doi.world import Drop, Move, Pickup, Return, World
+from src.doi.world import Move, Push, World
 
 
 class Intake:
@@ -82,14 +81,13 @@ class Intake:
 
 
 def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
-                policy: Optional[FillPolicy] = None) -> RunResult:
+                policy: Optional[PushPolicy] = None) -> RunResult:
     started = time.perf_counter()
     scenario = scenario or build_scenario(cfg)
     policy = policy or make_policy(cfg)
     shared = Shared(engine=EvidenceEngine(scenario.grid,
                                           cfg.unreachable_cost_for(scenario.grid.height, scenario.grid.width),
                                           cfg.record_epoch))
-    shared.supervisor = Supervisor(scenario, cfg)
     policy.prepare(scenario, cfg, shared)
     world = World(scenario, cfg)
     world.prefill(policy.prefill_set(scenario, cfg))
@@ -97,12 +95,13 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
     agents = [RobotAgent(i, scenario, cfg, policy, shared) for i in range(len(scenario.starts))]
     shared.agents = agents
     intake = Intake(scenario, cfg)
-    decisions = {"approved": 0, "vetoed": 0}
-    for a in agents:
-        for c in sorted(world.filled):
-            a.belief.filled.add(c)
+    for a in agents:                        # obstacles removed at tick 0 (benchmark arms) are known to everyone
+        for c in sorted(set(scenario.obstacles) - set(world.obstacles)):
+            a.belief.observe_cell(c, False, 1)      # seen free later than the tick-0 sighting
 
     ticks, stalled, idle = 0, False, 0
+    livelock_ticks = 20 * (scenario.grid.height + scenario.grid.width)
+    last_done, last_pushes, last_gain = 0, 0, 0
     for t in range(cfg.horizon or cfg.max_ticks):
         active = [a for a in agents if not a.finished]
         if not active:
@@ -110,13 +109,8 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
         world.begin_tick(t)
         if isinstance(policy, CentralPolicy):
             policy.sync(world, active, t)
-            policy.dispatch(active, t)
         intake.emit(t, agents)
         intake.deliver(t, agents)
-        for d in shared.supervisor.due(t):
-            if not agents[d.robot].finished:
-                agents[d.robot].ingest_decision(d, t)
-                decisions["approved" if d.decision == "approve" else "vetoed"] += 1
         for a in active:
             a.sense(world.observe(a.id, cfg.r_sense), t)
         inbox = network.deliver(t)
@@ -132,7 +126,7 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
         for a in active:
             res = results[a.id]
             a.after_action(res, t)
-            if res.ok and isinstance(actions[a.id], (Move, Pickup, Drop, Return)):
+            if res.ok and isinstance(actions[a.id], (Move, Push)):
                 progress = True
             if a.finished:
                 progress = True
@@ -144,22 +138,24 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
         if idle >= cfg.stall_ticks:
             stalled = True
             break
+        done_now = sum(a.task_idx for a in agents)
+        if done_now != last_done or world.removals != last_pushes:        # robots wandering is not progress
+            last_done, last_pushes, last_gain = done_now, world.removals, t
+        elif t - last_gain >= livelock_ticks:
+            stalled = True
+            break
     result = build_result(cfg, policy, world, network, agents, shared, ticks, stalled,
                           (time.perf_counter() - started) * 1000.0, scenario)
     result.intake = dict(intake.counts)
-    result.approvals = {"requested": sum(a.hauler.stats["requested"] for a in agents),
-                        "approved": decisions["approved"], "vetoed": decisions["vetoed"],
-                        "timeout_approved": sum(a.hauler.stats["timeout_approved"] for a in agents),
-                        "deferred": sum(a.hauler.stats["deferred"] for a in agents)}
     return result
 
 
 def build_result(cfg, policy, world, network, agents, shared, ticks, stalled, runtime_ms, scenario) -> RunResult:
     moves = sum(c["moves"] for c in world.counters.values())
     waits = sum(c["waits"] for c in world.counters.values())
-    carried = sum(c["carried_steps"] for c in world.counters.values())
-    fills = world.fills
-    J = float((moves - carried) + waits + cfg.kappa * carried + cfg.fee * fills)
+    push_steps = sum(c["push_steps"] for c in world.counters.values())
+    removals = world.removals
+    J = float((moves - push_steps) + waits + world.push_cost + cfg.fee * removals)
     U = cfg.unreachable_cost_for(scenario.grid.height, scenario.grid.width)
     unfinished = sum(len(a.tasks) - a.task_idx for a in agents)
     done = sum(a.task_idx for a in agents)
@@ -168,24 +164,19 @@ def build_result(cfg, policy, world, network, agents, shared, ticks, stalled, ru
     infos = sorted((i for a in agents for i in a.plan_infos), key=lambda i: (i.robot, i.task_idx))
     return RunResult(
         cfg=cfg.to_dict(), policy=policy.name, J=J, J_censored=J if cfg.horizon else J + U * unfinished, delay=delay,
-        throughput=1000.0 * done / max(1, ticks), moves=moves, waits=waits, carried_steps=carried,
-        fills=fills, fee_total=cfg.fee * fills, unfinished_tasks=unfinished, stalled=stalled, ticks=ticks,
+        throughput=1000.0 * done / max(1, ticks), moves=moves, waits=waits, push_steps=push_steps,
+        push_cost=float(world.push_cost), removals=removals, fee_total=cfg.fee * removals,
+        unfinished_tasks=unfinished, stalled=stalled, ticks=ticks,
         messages=network.stats.as_dict(), traffic_messages=network.traffic_stats.as_dict(),
-        overrides=world.overrides,
-        fill_ticks=sorted(v for v in world.filled_at.values() if v >= 0),
-        triggers=list(shared.triggers), plan_infos=infos, filled_at=dict(world.filled_at),
+        overrides=world.overrides, triggers=list(shared.triggers), pushes=[dict(r) for r in world.push_log],
+        push_rejected=sum(c["push_rejected"] for c in world.counters.values()), plan_infos=infos,
         appeared_at=dict(world.appeared_at),
-        edits=sorted((e for a in agents for e in a.hauler.edits), key=lambda e: (e["fill_tick"], e["pit"])),
-        wasted_haul_cost=float(cfg.kappa * sum(a.hauler.wasted_steps for a in agents)),
-        unconfirmed_hauls=sum(a.hauler.stats["unconfirmed"] for a in agents),
-        claims={"issued": sum(a.hauler.stats["issued"] for a in agents),
-                "lost": sum(a.hauler.stats["lost"] for a in agents),
-                "aborts": sum(a.hauler.stats["aborts"] for a in agents)},
         wrong_class_attempts=sum(c["wrong_class_attempts"] for c in world.counters.values()),
-        final_stock=dict(world.stock), runtime_ms=runtime_ms,
+        runtime_ms=runtime_ms,
         hindsight_buy=policy.hindsight_buy if isinstance(policy, HindsightPolicy) else 0.0,
-        trajectory={i: list(p) for i, p in world.trajectory.items()}, scenario=scenario,
-        carry_trace={i: list(v) for i, v in world.carry_trace.items()})
+        trajectory={i: list(p) for i, p in world.trajectory.items()},
+        obstacle_trace=[dict(o) for o in world.obstacle_trace], tick_cost=list(world.tick_cost),
+        scenario=scenario)
 
 
 def run_arms(cfg: SimConfig, arms: Sequence[str]) -> Dict[str, RunResult]:

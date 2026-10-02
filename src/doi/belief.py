@@ -1,32 +1,35 @@
-"""BeliefState: one robot's CRDT view of records, edits, cell status, stock, claims and approvals."""
-from typing import Any, Dict, FrozenSet, Sequence, Tuple
+"""BeliefState: one robot's CRDT view of the traffic records and of which cells are blocked, and by what.
 
-from src.doi.crdt import (AggRecordSet, ApprovalSet, ClaimSet, Clock, GSet, MaxRegisterMap, ObstructionRecord,
-                          ObstructionSet, PNStock, RecordSet, RentRecord, Ticket)
+A cell's state is never "removed for good": obstacles move, so blocked and free are last-seen ticks that merge by
+max, and the kind of obstacle on a cell is another max register (tick-encoded)."""
+from typing import Any, Dict, FrozenSet, Optional, Tuple
+
+from src.doi.crdt import AggRecordSet, Clock, GSet, MaxRegisterMap, ObstructionRecord, ObstructionSet, RecordSet, RentRecord
+from src.doi.kinds import code, name_of
 
 Pos = Tuple[int, int]
 CLASS_CODE = {"unknown": 0, "robot_clearable": 1, "needs_human": 2}
 
 
+KIND_SLOTS = 8          # kind codes are below this, so tick * KIND_SLOTS + code orders by tick first
+
+
 class BeliefState:
-    def __init__(self, robot_id: int, depots: Dict[Pos, int], static_pits: Sequence[Pos]) -> None:
+    def __init__(self, robot_id: int, initial_obstacles: Dict[Pos, str]) -> None:
         self.robot_id = robot_id
         self.records = RecordSet()
         self.agg = AggRecordSet()
-        self.filled = GSet()
-        self.stock = PNStock(depots)
-        self.claims = ClaimSet()
         self.census = GSet()
         self.report_tick = MaxRegisterMap(-1)
         self.blocked_tick = MaxRegisterMap(-1)
         self.free_tick = MaxRegisterMap(-1)
         self.cls = MaxRegisterMap(0)
+        self.kind = MaxRegisterMap(-1)
         self.obstructions = ObstructionSet()
-        self.approvals = ApprovalSet()
-        self.lamport = 0
-        for p in static_pits:
-            self.blocked_tick.raise_to(p, 0)
-            self.cls.raise_to(p, CLASS_CODE["robot_clearable"])
+        for cell, kind in initial_obstacles.items():       # obstacles on the map at tick 0 are known to everyone
+            self.blocked_tick.raise_to(cell, 0)
+            self.cls.raise_to(cell, CLASS_CODE["robot_clearable"])
+            self.kind.raise_to(cell, code(kind))
         self.clock = Clock()
         for name in self._COMPONENTS:
             getattr(self, name)._clock = self.clock
@@ -35,8 +38,8 @@ class BeliefState:
     def version(self) -> int:
         return self.clock.n
 
-    _COMPONENTS = ("records", "agg", "filled", "stock", "claims", "census", "report_tick", "blocked_tick",
-                   "free_tick", "cls", "obstructions", "approvals")
+    _COMPONENTS = ("records", "agg", "census", "report_tick", "blocked_tick", "free_tick", "cls", "kind",
+                   "obstructions")
 
     def add_record(self, rec: RentRecord) -> None:
         self.records.add(rec)
@@ -52,16 +55,21 @@ class BeliefState:
         for cell in rec.cells:
             self.report_tick.raise_to(cell, t)
             self.cls.raise_to(cell, CLASS_CODE[rec.cls])
+            self.kind.raise_to(cell, t * KIND_SLOTS + code(rec.kind))
 
-    def observe_cell(self, cell: Pos, blocked: bool, t: int) -> None:
+    def observe_cell(self, cell: Pos, blocked: bool, t: int, kind: Optional[str] = None) -> None:
         (self.blocked_tick if blocked else self.free_tick).raise_to(cell, t)
+        if blocked and kind is not None:
+            self.kind.raise_to(cell, t * KIND_SLOTS + code(kind))
+
+    def kind_of(self, cell: Pos) -> Optional[str]:
+        v = self.kind.get(cell)
+        return name_of(v % KIND_SLOTS) if v >= 0 else None
 
     def mark_needs_human(self, cell: Pos) -> None:
         self.cls.raise_to(cell, CLASS_CODE["needs_human"])
 
     def status(self, cell: Pos) -> str:
-        if cell in self.filled:
-            return "filled"
         blocked, free, reported = self.blocked_tick.get(cell), self.free_tick.get(cell), self.report_tick.get(cell)
         if blocked >= 0 and blocked >= free:
             return "confirmed"
@@ -79,19 +87,13 @@ class BeliefState:
         return frozenset(c for c in self.believed_blocked() if self.cls.get(c) == CLASS_CODE["needs_human"])
 
     def editable(self) -> Tuple[Pos, ...]:
-        return tuple(sorted((self.believed_blocked() - self.hard_blocked()) | self.filled.items()))
-
-    def next_ticket(self) -> Ticket:
-        self.lamport += 1
-        return (self.lamport, self.robot_id)
+        """Believed-blocked cells a robot may remove (everything but obstructions that need a human)."""
+        return tuple(sorted(self.believed_blocked() - self.hard_blocked()))
 
     def merge(self, other: "BeliefState") -> bool:
         changed = False
         for name in self._COMPONENTS:
             changed |= getattr(self, name).merge(getattr(other, name))
-        if other.lamport > self.lamport:
-            self.lamport = other.lamport
-            changed = True
         return changed
 
     def snapshot(self) -> "BeliefState":
@@ -102,7 +104,6 @@ class BeliefState:
             comp = getattr(self, name).copy()
             comp._clock = out.clock
             setattr(out, name, comp)
-        out.lamport = self.lamport
         return out
 
     def delta_since(self, v: int) -> "BeliefState":
@@ -114,11 +115,10 @@ class BeliefState:
             comp = getattr(self, name).delta(v)
             comp._clock = out.clock
             setattr(out, name, comp)
-        out.lamport = self.lamport
         return out
 
     def units(self) -> int:
         return sum(getattr(self, name).units() for name in self._COMPONENTS)
 
     def canonical(self) -> Any:
-        return tuple(getattr(self, name).canonical() for name in self._COMPONENTS) + (self.lamport,)
+        return tuple(getattr(self, name).canonical() for name in self._COMPONENTS)

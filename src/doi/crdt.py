@@ -1,4 +1,4 @@
-"""State-based CRDTs for the per-robot belief: sets, max registers, stock counters, claims, records.
+"""State-based CRDTs for the per-robot belief: sets, max registers and the traffic records.
 
 Every component can carry a shared `Clock`; local writes and merge-ins stamp the touched entry with a fresh
 version so `delta(v)` can return only the entries that changed after version `v` (delta-state gossip).
@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 Pos = Tuple[int, int]
-Ticket = Tuple[int, int]
 BundleKey = Tuple[Pos, ...]
 
 
@@ -122,147 +121,6 @@ class MaxRegisterMap(_Versioned):
 
     def canonical(self) -> Any:
         return tuple(sorted(self._d.items()))
-
-
-class PNStock(_Versioned):
-    def __init__(self, initial: Dict[Pos, int]) -> None:
-        self._init_versions()
-        self.initial = dict(initial)
-        self._takes: Dict[Pos, Dict[int, int]] = {d: {} for d in initial}
-        self._returns: Dict[Pos, Dict[int, int]] = {d: {} for d in initial}
-
-    def take(self, depot: Pos, robot_id: int, n: int = 1) -> None:
-        t = self._takes[depot]
-        t[robot_id] = t.get(robot_id, 0) + n
-        self._bump(("t", depot, robot_id))
-
-    def give_back(self, depot: Pos, robot_id: int, n: int = 1) -> None:
-        r = self._returns[depot]
-        r[robot_id] = r.get(robot_id, 0) + n
-        self._bump(("r", depot, robot_id))
-
-    def mark_empty(self, depot: Pos, robot_id: int) -> None:
-        self.take(depot, robot_id, self.remaining(depot))
-
-    def remaining(self, depot: Pos) -> int:
-        value = (self.initial[depot] - sum(self._takes[depot].values())
-                 + sum(self._returns[depot].values()))
-        return max(0, value)
-
-    def _merge_maps(self, kind: str, depot: Pos, mine: Dict[int, int], theirs: Dict[int, int]) -> bool:
-        changed = False
-        for k, v in theirs.items():
-            if v > mine.get(k, 0):
-                mine[k] = v
-                self._bump((kind, depot, k))
-                changed = True
-        return changed
-
-    def merge(self, other: "PNStock") -> bool:
-        changed = False
-        for d in self._takes:
-            changed |= self._merge_maps("t", d, self._takes[d], other._takes.get(d, {}))
-            changed |= self._merge_maps("r", d, self._returns[d], other._returns.get(d, {}))
-        return changed
-
-    def units(self) -> int:
-        return sum(len(m) for m in self._takes.values()) + sum(len(m) for m in self._returns.values())
-
-    def copy(self) -> "PNStock":
-        out = PNStock(self.initial)
-        out._takes = {d: dict(m) for d, m in self._takes.items()}
-        out._returns = {d: dict(m) for d, m in self._returns.items()}
-        self._copy_versions_to(out)
-        return out
-
-    def delta(self, v: int) -> "PNStock":
-        out = PNStock(self.initial)
-        for d in self._takes:
-            out._takes[d] = {k: x for k, x in self._takes[d].items() if self._newer(("t", d, k), v)}
-            out._returns[d] = {k: x for k, x in self._returns[d].items() if self._newer(("r", d, k), v)}
-        return out
-
-    def canonical(self) -> Any:
-        return tuple((d, tuple(sorted(self._takes[d].items())), tuple(sorted(self._returns[d].items())))
-                     for d in sorted(self._takes))
-
-
-@dataclass(frozen=True)
-class Claim:
-    pits: Tuple[Pos, ...]
-    hauler: int
-
-
-class ClaimSet(_Versioned):
-    """Ticket -> (claim, expiry) with max-merge expiry; released tickets are grow-only tombstones."""
-
-    def __init__(self) -> None:
-        self._init_versions()
-        self._d: Dict[Ticket, Tuple[Claim, int]] = {}
-        self._released: set = set()
-
-    def issue(self, ticket: Ticket, claim: Claim, expiry: int) -> None:
-        before = self._d.get(ticket)
-        if before is not None:
-            old, old_exp = before
-            claim = min(old, claim, key=lambda c: (c.pits, c.hauler))
-            expiry = max(expiry, old_exp)
-        self._d[ticket] = (claim, expiry)
-        if before != self._d[ticket]:
-            self._bump(ticket)
-
-    def renew(self, ticket: Ticket, expiry: int) -> None:
-        if ticket in self._d:
-            claim, old = self._d[ticket]
-            if expiry > old:
-                self._d[ticket] = (claim, expiry)
-                self._bump(ticket)
-
-    def release(self, ticket: Ticket) -> None:
-        if ticket not in self._released:
-            self._released.add(ticket)
-            self._bump(("rel", ticket))
-
-    def effective(self, pit: Pos, now: int) -> Optional[Tuple[Ticket, Claim]]:
-        live = [(t, c) for t, (c, exp) in self._d.items()
-                if pit in c.pits and exp > now and t not in self._released]
-        return min(live, key=lambda x: x[0]) if live else None
-
-    def tickets_of(self, robot_id: int) -> List[Ticket]:
-        return sorted(t for t, (c, _) in self._d.items() if c.hauler == robot_id)
-
-    def merge(self, other: "ClaimSet") -> bool:
-        changed = False
-        for t, (c, exp) in other._d.items():
-            before = self._d.get(t)
-            self.issue(t, c, exp)
-            changed |= before != self._d[t]
-        for t in other._released:
-            if t not in self._released:
-                self._released.add(t)
-                self._bump(("rel", t))
-                changed = True
-        return changed
-
-    def units(self) -> int:
-        return len(self._d) + len(self._released)
-
-    def copy(self) -> "ClaimSet":
-        out = ClaimSet()
-        out._d = dict(self._d)
-        out._released = set(self._released)
-        self._copy_versions_to(out)
-        return out
-
-    def delta(self, v: int) -> "ClaimSet":
-        out = ClaimSet()
-        out._d = {t: x for t, x in self._d.items() if self._newer(t, v)}
-        out._released = {t for t in self._released if self._newer(("rel", t), v)}
-        return out
-
-    def canonical(self) -> Any:
-        return (tuple(sorted((t, c.pits, c.hauler, exp) for t, (c, exp) in self._d.items())),
-                frozenset(self._released))
 
 
 @dataclass(frozen=True)
@@ -416,46 +274,6 @@ class ObstructionSet(_Versioned):
     def delta(self, v: int) -> "ObstructionSet":
         out = ObstructionSet()
         out._d = {k: r for k, r in self._d.items() if self._newer(k, v)}
-        return out
-
-    def canonical(self) -> Any:
-        return frozenset(self._d.items())
-
-
-ApprovalKey = Tuple[Tuple[Pos, ...], Ticket]
-
-
-class ApprovalSet(_Versioned):
-    def __init__(self) -> None:
-        self._init_versions()
-        self._d: Dict[ApprovalKey, str] = {}
-
-    def set(self, key: ApprovalKey, decision: str) -> None:
-        if self._d.get(key) != "veto" and self._d.get(key) != decision:
-            self._d[key] = decision
-            self._bump(key)
-
-    def get(self, key: ApprovalKey) -> Optional[str]:
-        return self._d.get(key)
-
-    def merge(self, other: "ApprovalSet") -> bool:
-        before = dict(self._d)
-        for k, v in other._d.items():
-            self.set(k, v)
-        return self._d != before
-
-    def units(self) -> int:
-        return len(self._d)
-
-    def copy(self) -> "ApprovalSet":
-        out = ApprovalSet()
-        out._d = dict(self._d)
-        self._copy_versions_to(out)
-        return out
-
-    def delta(self, v: int) -> "ApprovalSet":
-        out = ApprovalSet()
-        out._d = {k: d for k, d in self._d.items() if self._newer(k, v)}
         return out
 
     def canonical(self) -> Any:

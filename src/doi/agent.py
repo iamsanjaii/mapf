@@ -2,12 +2,13 @@
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
-from src.doi.belief import BeliefState
+from src.doi.belief import CLASS_CODE, BeliefState
 from src.doi.config import SimConfig
-from src.doi.hauler import Hauler, HaulState
 from src.doi.network import Message
-from src.doi.paths import bfs_dist_map, dream_path, passable_fn, single_pit_rents
-from src.doi.policies import FillPolicy, Shared
+from src.doi.paths import bfs_dist_map, dream_path, passable_fn
+from src.doi.policies import PushPolicy, Shared, trigger
+from src.doi.pushplan import candidate_plans
+from src.doi.pusher import Pusher
 from src.doi.rng import u01
 from src.doi.scenarios import Scenario
 from src.doi.spacetime import plan_spacetime
@@ -30,10 +31,8 @@ class TaskPlanInfo:
     d_open: int
     bundle: Tuple[Pos, ...]
     rent: int
-    belief_filled: FrozenSet[Pos]
     belief_blocked: FrozenSet[Pos]
     hard_blocked: FrozenSet[Pos]
-    single_rents: Dict[Pos, int]
 
 
 @dataclass(frozen=True)
@@ -44,7 +43,7 @@ class IntentRecord:
 
 
 class RobotAgent:
-    def __init__(self, rid: int, scenario: Scenario, cfg: SimConfig, policy: FillPolicy,
+    def __init__(self, rid: int, scenario: Scenario, cfg: SimConfig, policy: PushPolicy,
                  shared: Shared) -> None:
         self.id = rid
         self.cfg = cfg
@@ -54,9 +53,8 @@ class RobotAgent:
         self.H, self.W = self.grid.height, self.grid.width
         self.U = cfg.unreachable_cost_for(self.H, self.W)
         self.tasks: List[Pos] = list(scenario.tasks[rid])
-        self.belief = BeliefState(rid, dict(scenario.depots), list(scenario.pits))
+        self.belief = BeliefState(rid, dict(scenario.obstacles))
         self.pos: Pos = scenario.starts[rid]
-        self.carrying = False
         self.task_idx = 0
         self.finished = False
         self.completed_tick: Optional[int] = None
@@ -78,8 +76,9 @@ class RobotAgent:
         self._recent: List[Pos] = []
         self._planned_task = -1
         self._plan_goal: Optional[Pos] = None
-        self._hauled = False
-        self.hauler = Hauler(self)
+        self._pushing = False
+        self.pusher = Pusher(self)
+        self._push_key = None
         self._last_action: Optional[Action] = None
         self._reserved_cache: Tuple[int, Set[Tuple[Pos, int]]] = (-1, set())
 
@@ -87,17 +86,18 @@ class RobotAgent:
     def goal(self) -> Pos:
         return self.tasks[self.task_idx]
 
-    def _snapshot_view(self) -> Tuple[FrozenSet[Pos], FrozenSet[Pos]]:
-        return self.belief.believed_blocked(), frozenset(self.belief.filled.items())
+    def _snapshot_view(self) -> FrozenSet[Pos]:
+        return self.belief.believed_blocked()
 
     def sense(self, obs: Observation, t: int) -> None:
         before = self._snapshot_view()
         b = self.belief
-        for c in obs.filled_pits:
-            b.filled.add(c)
+        kinds = dict(obs.kinds)
         for c in sorted(obs.blocked_cells):
-            if b.status(c) not in ("confirmed", "filled"):
-                b.observe_cell(c, True, t)
+            if b.status(c) != "confirmed":
+                b.observe_cell(c, True, t, kind=kinds.get(c))
+            if c in obs.clearable:
+                b.cls.raise_to(c, CLASS_CODE["robot_clearable"])
         for c in sorted(obs.scanned - obs.blocked_cells):
             if b.status(c) in ("reported", "confirmed"):
                 b.observe_cell(c, False, t)
@@ -121,12 +121,6 @@ class RobotAgent:
 
     def ingest_record(self, rec, t: int) -> None:
         self.belief.add_obstruction(rec, t)
-        self.replan_needed = True
-
-    def ingest_decision(self, d, t: int) -> None:
-        self.belief.approvals.set(d.key, d.decision)
-        for cell in d.needs_human:
-            self.belief.mark_needs_human(cell)
         self.replan_needed = True
 
     def _reservations(self, t: int) -> Set[Tuple[Pos, int]]:
@@ -172,30 +166,29 @@ class RobotAgent:
         return False
 
     def _passable(self):
-        return passable_fn(self.grid, frozenset(self.belief.filled.items()), closed=self.belief.believed_blocked())
+        return passable_fn(self.grid, closed=self.belief.believed_blocked())
 
     def _begin_task(self, t: int) -> None:
         b = self.belief
-        filled = frozenset(b.filled.items())
-        d = dream_path(self.grid, b.editable(), filled, self.pos, self.goal, self.U, b.hard_blocked())
-        singles: Dict[Pos, int] = {}
-        if self.policy.needs_single_rents:
-            singles = single_pit_rents(self.grid, b.editable(), filled, self.pos, self.goal, self.U,
-                                       b.hard_blocked())
+        d = dream_path(self.grid, b.editable(), self.pos, self.goal, self.U, b.hard_blocked())
         info = TaskPlanInfo(self.id, self.task_idx, t, self.pos, self.goal, d.d_block, d.d_open,
-                            tuple(sorted(d.bundle)), d.rent, filled, b.believed_blocked(),
-                            b.hard_blocked(), singles)
+                            tuple(sorted(d.bundle)), d.rent, b.believed_blocked(), b.hard_blocked())
         self.plan_infos.append(info)
         self.stats["rent_counted"] += info.rent
         self._planned_task = self.task_idx
         self._plan_goal = None
         self.policy.on_task_planned(self, info, t)
 
-    def _replan(self, t: int, goal: Pos) -> None:
+    def _passable_to(self, goal: Pos):
+        """Passability for planning: a goal cell believed blocked is still a target, so the robot walks up to it
+        (and can then see what is on it) instead of waiting where it is."""
         pf = self._passable()
+        return (lambda c: pf(c) or c == goal) if goal in self.belief.believed_blocked() else pf
+
+    def _replan(self, t: int, goal: Pos) -> None:
+        pf = self._passable_to(goal)
         reserved = self._reservations(t)
-        sig = (goal, self.pos, self.belief.believed_blocked(), len(self.belief.filled.items()),
-               frozenset((c, k - t) for c, k in reserved))
+        sig = (goal, self.pos, self.belief.believed_blocked(), frozenset((c, k - t) for c, k in reserved))
         self.replan_needed = False
         self.blocked_streak = 0
         self._plan_goal = goal
@@ -212,8 +205,7 @@ class RobotAgent:
         if not path:
             reported = frozenset(c for c in self.belief.believed_blocked() if self.belief.status(c) == "reported")
             if reported:
-                pf2 = passable_fn(self.grid, frozenset(self.belief.filled.items()),
-                                  closed=self.belief.believed_blocked() - reported)
+                pf2 = passable_fn(self.grid, closed=self.belief.believed_blocked() - reported)
                 path = plan_spacetime(pf2, self.pos, goal, t, reserved, bfs_dist_map(pf2, goal, self.H, self.W),
                                       max_len, window)
         self.plan = path if path else [self.pos]
@@ -246,7 +238,7 @@ class RobotAgent:
         near = [c for c in stationary if abs(c[0] - self.pos[0]) + abs(c[1] - self.pos[1]) == 1]
         if not near:
             return None
-        pf = passable_fn(self.grid, frozenset(self.belief.filled.items()), closed=self.belief.believed_blocked())
+        pf = passable_fn(self.grid, closed=self.belief.believed_blocked())
         h = bfs_dist_map(lambda c: pf(c) or c in near, goal, self.H, self.W)
         mine = h.get(self.pos)
         on_route = [c for c in sorted(near) if mine is not None and h.get(c, 1 << 30) < mine]
@@ -301,6 +293,8 @@ class RobotAgent:
                 or (len(self.plan) <= 1 and self.pos != goal)):
             self._replan(t, goal)
         if len(self.plan) > 1 and self.plan[1] != self.plan[0]:
+            if self.plan[1] in self.belief.believed_blocked():      # next to a goal with an obstacle on it: wait
+                return Wait()
             return Move(self.plan[1])
         if self.pos != goal and self.wait_streak >= DODGE_PATIENCE and u01(self.cfg.seed, t, self.id, 6) < 0.5:
             n = self._dodge(t)
@@ -310,32 +304,66 @@ class RobotAgent:
         return Wait()
 
     def decide(self, t: int) -> Action:
-        h = self.hauler
-        h.update(t)
         action: Optional[Action] = None
-        if h.active():
-            action = h.step(t)
+        if self.pusher.active():
+            action = self.pusher.step(t)
         if action is None:
             if self._planned_task != self.task_idx:
                 self._begin_task(t)
-            if h.state == HaulState.NONE:
-                proposal = self.policy.propose(self, t)
-                if proposal is not None:
-                    h.offer(proposal, t)
-                    h.update(t)
-                    if h.active():
-                        action = h.step(t)
-        self._hauled = action is not None
+            if not self.pusher.active():
+                plan = self._consider_push(t)
+                if plan is not None:
+                    self.pusher.start(plan, t)
+                    action = self.pusher.step(t)
+        self._pushing = action is not None and self.pusher.active()
         if action is None:
             action = self.follow(self.goal, t)
         self._last_action = action
         return action
 
+    def _consider_push(self, t: int):
+        """The best push plan on this robot's own route, if the arm says push rather than go round."""
+        if not self.policy.pushes or self.pos == self.goal:
+            return None
+        b = self.belief
+        key = (b.version, self.pos, self.goal, tuple(sorted(c for c, u in self.deferred_until.items() if u > t)))
+        if key == self._push_key:
+            return None
+        self._push_key = key
+        blocked = b.believed_blocked()
+        d = dream_path(self.grid, b.editable(), self.pos, self.goal, self.U, b.hard_blocked())
+        if not d.bundle or d.rent <= 0:
+            return None
+        # Only obstacles this robot has seen and knows a robot may clear (never an unverified report, never a
+        # class that needs a human) are candidates.
+        eligible = [c for c in d.bundle
+                    if b.status(c) == "confirmed" and b.cls.get(c) == CLASS_CODE["robot_clearable"]]
+        if not eligible:
+            return None
+        engine = self.shared.engine
+        skip = frozenset(c for c, u in self.deferred_until.items() if u > t)
+        plans = candidate_plans(self.grid, engine.distance, blocked, eligible, b.kind_of, self.pos, self.goal,
+                                self.cfg.kappa, self.cfg.fee, self.cfg.push_max, self.U, skip)
+        if not plans:
+            return None
+        info = TaskPlanInfo(self.id, self.task_idx, t, self.pos, self.goal, d.d_block, d.d_open,
+                            tuple(sorted(d.bundle)), d.rent, blocked, b.hard_blocked())
+        best = None
+        for plan in plans:                     # the plan with the best score for the whole fleet, not the cheapest for me
+            verdict = self.policy.assess(self, plan, info)
+            if verdict is not None and (best is None or (verdict[0], -plan.total) > (best[1][0], -best[0].total)):
+                best = (plan, verdict)
+        if best is None:
+            return None
+        plan, (_score, known, price) = best
+        self.shared.triggers.append(trigger(t, self, plan, known, price))
+        return plan
+
     def outgoing(self, t: int) -> List[Message]:
         cells = tuple(self.plan[: self.cfg.intent_window + 1])
         out = [Message(self.id, "INTENT", (t, self.blocked_ticks, cells), len(cells), t)]
         if self.policy.uses_gossip:
-            due = t % self.cfg.gossip_period == 0 or self.hauler.holds_claim()
+            due = t % self.cfg.gossip_period == 0
             if self.cfg.delta_gossip:
                 if t % self.cfg.full_sync_period == 0:
                     out.append(Message(self.id, "STATE", self.belief.snapshot(), self.belief.units(), t))
@@ -353,10 +381,9 @@ class RobotAgent:
         action = self._last_action
         self.pos = res.pos
         self.blocked_ticks = res.blocked_ticks
-        self.carrying = res.carrying
         self._recent = (self._recent + [self.pos])[-EVADE_WINDOW:]
-        if self._hauled:
-            self.hauler.on_result(action, res, t)
+        if self._pushing:
+            self.pusher.on_result(action, res, t)
         if isinstance(action, Move):
             if res.ok:
                 self.plan = self.plan[1:] or [self.pos]
@@ -369,7 +396,7 @@ class RobotAgent:
         elif isinstance(action, Wait) and len(self.plan) > 1:
             self.plan = self.plan[1:]
         self.wait_streak = self.wait_streak + 1 if isinstance(action, Wait) else 0
-        if not self._hauled and self.pos == self.goal:
+        if not self.pusher.active() and self.pos == self.goal:
             self.task_idx += 1
             self.replan_needed = True
             if self.task_idx >= len(self.tasks):

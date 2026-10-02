@@ -31,7 +31,7 @@ def test_run_grid_jobs_equal(tmp_path):
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "experiments"))
     from doi_common import run_grid
     from src.doi.config import SimConfig
-    base = SimConfig(n_robots=3, tasks_per_robot=3, claim=False)
+    base = SimConfig(n_robots=3, tasks_per_robot=3)
     a = run_grid(base, {"r_comm": [0.0, 8.0]}, ["never", "rof", "central"], [0, 1], str(tmp_path / "a"), jobs=1)
     b = run_grid(base, {"r_comm": [0.0, 8.0]}, ["never", "rof", "central"], [0, 1], str(tmp_path / "b"), jobs=2)
     assert a.drop(columns=["runtime_ms"]).equals(b.drop(columns=["runtime_ms"]))
@@ -44,7 +44,7 @@ def test_run_grid_writes_files_scenario_params_axis_and_skips_hindsight_for_fami
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "experiments"))
     from doi_common import run_grid
     from src.doi.config import SimConfig
-    base = SimConfig(scenario="incidents_room", n_robots=2, tasks_per_robot=2, claim=False, intake="oracle")
+    base = SimConfig(scenario="incidents_room", n_robots=2, tasks_per_robot=2, intake="oracle")
     out = str(tmp_path / "d")
     df = run_grid(base, {"scenario_params.p_report": [0.5, 0.9]}, ["never", "rof"], [200], out, jobs=1)
     assert "hindsight" not in set(df["policy"]) and "free" in set(df["policy"])

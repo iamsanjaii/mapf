@@ -1,9 +1,10 @@
-"""Hindsight-optimal fill set and the OPT lower bound (spec 2.6); static-pit scenarios only."""
+"""Hindsight-optimal removal set and the OPT lower bound; scenarios whose obstacles are all there at tick 0."""
 from dataclasses import dataclass
 from itertools import combinations
 from typing import Dict, FrozenSet, List, Tuple
 
 from src.doi.config import SimConfig
+from src.doi.kinds import weight
 from src.doi.paths import bfs_dist_map, dream_path, passable_fn
 from src.doi.scenarios import Scenario
 
@@ -37,46 +38,39 @@ def _require_static(scenario: Scenario) -> None:
 
 
 def buy_lb(scenario: Scenario, cfg: SimConfig) -> Dict[Pos, float]:
+    """Lowest conceivable price of removing each obstacle: one push step, if any straight push is possible at all."""
     _require_static(scenario)
-    grid, pits = scenario.grid, frozenset(scenario.pits)
-    passable = passable_fn(grid, pits)
-    depot_maps = [bfs_dist_map(passable, d, grid.height, grid.width)
-                  for d, stock in sorted(scenario.depots.items()) if stock > 0]
+    grid = scenario.grid
+    free = passable_fn(grid)
     out: Dict[Pos, float] = {}
-    for p in sorted(pits):
-        best = float("inf")
-        for dist in depot_maps:
-            for dr, dc in [(-1, 0), (1, 0), (0, 1), (0, -1)]:
-                n = (p[0] + dr, p[1] + dc)
-                if n in dist:
-                    best = min(best, cfg.fee + cfg.kappa * dist[n])
-        out[p] = best
+    for p, kind in sorted(scenario.obstacles.items()):
+        pushable = any(free((p[0] - dr, p[1] - dc)) and free((p[0] + dr, p[1] + dc))
+                       for dr, dc in [(-1, 0), (1, 0), (0, 1), (0, -1)])
+        out[p] = cfg.fee + cfg.kappa * weight(kind) if pushable else float("inf")
     return out
 
 
 def hindsight(scenario: Scenario, cfg: SimConfig) -> Hindsight:
+    """Best subset of obstacles to make vanish at tick 0, knowing every task, charged `buy_lb` for each."""
     _require_static(scenario)
     grid = scenario.grid
     h, w = grid.height, grid.width
     unreachable = cfg.unreachable_cost_for(h, w)
     buys = buy_lb(scenario, cfg)
     pairs = task_pairs(scenario)
-    capacity = sum(scenario.depots.values())
+    cells = frozenset(scenario.obstacles)
 
     bundles = set()
     for origin, dest in pairs:
-        bundles |= dream_path(grid, scenario.pits, frozenset(), origin, dest, unreachable).bundle
-    relevant = tuple(sorted(bundles))
+        bundles |= dream_path(grid, sorted(cells), origin, dest, unreachable).bundle
+    relevant = tuple(sorted(b for b in bundles if buys[b] < float("inf")))
 
     cache: Dict[FrozenSet[Pos], float] = {}
 
     def lb(subset: FrozenSet[Pos]) -> float:
         if subset in cache:
             return cache[subset]
-        if len(subset) > capacity:
-            cache[subset] = float("inf")
-            return cache[subset]
-        passable = passable_fn(grid, subset)
+        passable = passable_fn(grid, closed=cells - subset)
         maps: Dict[Pos, Dict[Pos, int]] = {}
         total = 0.0
         for origin, dest in pairs:
