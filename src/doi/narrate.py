@@ -90,6 +90,10 @@ FLAG_GUIDE: List[Tuple[str, List[Tuple[str, str, str]]]] = [
         ("--push-max N", "Longest straight push a robot will plan (default 6).", ""),
         ("--theta X", "Trigger multiplier (default 1).",
          "0 = Eager (push at any saving), 1 = ski rental, 2 = wait for twice the evidence."),
+        ("--bundle-max N", "1 = single pushes (default), 2 = also two-step plans.",
+         "With 2, a robot can plan two pushes in a row, which pays when two obstacles must both go (complements)."),
+        ("--lam X", "rof_p only: threshold multiplier when the forecast says the push will pay (default 0.5).",
+         "The multiplier is 1/X when the forecast says it will not; 1 makes rof_p behave like rof."),
     ]),
     ("INFORMATION (who knows what)", [
         ("--r-comm R", "How far a robot's ledger messages reach (0 = none, inf = everywhere).",

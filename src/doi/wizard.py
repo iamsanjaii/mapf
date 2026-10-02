@@ -68,6 +68,10 @@ COMMON_FIELDS: List[Field] = [
     ("r_comm", "Message radius in cells (0 = no sharing, inf = all)", float, 8.0, lambda v: v >= 0, "0 or more"),
     ("loss", "Message loss probability 0-1", float, 0.0, _between(0, 1), "between 0 and 1"),
     ("latency", "Message delay in ticks", int, 1, lambda v: v >= 1, "at least 1"),
+    ("bundle_max", "Pushes planned in a row (1 = single, 2 = two-step plans)", int, 1, lambda v: v in (1, 2),
+     "1 or 2"),
+    ("lam", "rof_p threshold multiplier when its forecast says the push pays", float, 0.5,
+     lambda v: 0 < v <= 1, "above 0 and at most 1"),
     ("policy", "Arms to compare, comma separated", str, "never,rof", lambda v: all(p in POLICIES for p in
                                                                                  v.split(",")), "names from --list"),
 ]
@@ -145,7 +149,7 @@ def configure(args, explicit: Set[str], preview: Callable, yes: bool = False, in
             common_done = True
         cfg = SimConfig(seed=args.seed, n_robots=args.robots, tasks_per_robot=args.tasks, kappa=args.kappa,
                         fee=args.fee, push_max=args.push_max, r_comm=args.r_comm, loss=args.loss,
-                        latency=args.latency)
+                        latency=args.latency, bundle_max=args.bundle_max, lam=args.lam)
         answers = {k: getattr(args, k, None) for k in ("rows", "cols", "wall_col", "blocks", "doors", "kind",
                                                        "crossing", "strips", "strip_min", "strip_max", "pallets",
                                                        "crates", "shelves", "map")}

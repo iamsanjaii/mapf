@@ -46,7 +46,8 @@ def build(args):
     if args.demo == "toy":
         scenario = scenario_from_ascii(TOY_ROWS, [(1, 2)], [TOY_TASKS], name="toy")
         cfg = SimConfig(n_robots=1, tasks_per_robot=len(TOY_TASKS), kappa=args.kappa, fee=args.fee,
-                        push_max=args.push_max, theta=args.theta, debug_checks=True)
+                        push_max=args.push_max, theta=args.theta, bundle_max=getattr(args, "bundle_max", 1), lam=getattr(args, "lam", 0.5),
+                        debug_checks=True)
         return cfg, scenario
     params = {}
     if args.p_false is not None:
@@ -57,7 +58,8 @@ def build(args):
         scenario=args.scenario, seed=args.seed, n_robots=args.robots, tasks_per_robot=args.tasks,
         kappa=args.kappa, fee=args.fee, push_max=args.push_max, r_comm=args.r_comm, loss=args.loss,
         latency=args.latency, intake=args.intake, max_ticks=args.max_ticks,
-        scenario_params=params, p_wrong_class=args.p_wrong_class, theta=args.theta)
+        scenario_params=params, p_wrong_class=args.p_wrong_class, theta=args.theta,
+        bundle_max=getattr(args, "bundle_max", 1), lam=getattr(args, "lam", 0.5))
     if args.demo == "fleet":
         cfg = cfg.replace(scenario="multi_block_wall", n_robots=8, tasks_per_robot=10, seed=args.seed)
     if args.demo == "scatter":
@@ -276,6 +278,9 @@ def main(argv=None):
     ap.add_argument("--loss", type=float, default=0.0, help="ledger message loss probability")
     ap.add_argument("--latency", type=int, default=1)
     ap.add_argument("--theta", type=float, default=1.0)
+    ap.add_argument("--bundle-max", type=int, choices=[1, 2], default=1,
+                    help="1: single pushes; 2: also two-step plans (two obstacles moved in sequence)")
+    ap.add_argument("--lam", type=float, default=0.5, help="rof_p: threshold multiplier when the forecast says yes")
     ap.add_argument("--intake", default="none", help="none | oracle   (family D scenarios)")
     ap.add_argument("--p-false", type=float, default=None)
     ap.add_argument("--p-report", type=float, default=None)
