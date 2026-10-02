@@ -47,6 +47,7 @@ class RunResult:
     runtime_ms: float = 0.0
     trajectory: Dict[int, List[Pos]] = field(default_factory=dict)
     scenario: Any = None
+    carry_trace: Dict[int, List[bool]] = field(default_factory=dict)
 
 
 def _unreachable(result: RunResult) -> float:

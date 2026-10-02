@@ -184,7 +184,8 @@ def build_result(cfg, policy, world, network, agents, shared, ticks, stalled, ru
         wrong_class_attempts=sum(c["wrong_class_attempts"] for c in world.counters.values()),
         final_stock=dict(world.stock), runtime_ms=runtime_ms,
         hindsight_buy=policy.hindsight_buy if isinstance(policy, HindsightPolicy) else 0.0,
-        trajectory={i: list(p) for i, p in world.trajectory.items()}, scenario=scenario)
+        trajectory={i: list(p) for i, p in world.trajectory.items()}, scenario=scenario,
+        carry_trace={i: list(v) for i, v in world.carry_trace.items()})
 
 
 def run_arms(cfg: SimConfig, arms: Sequence[str]) -> Dict[str, RunResult]:

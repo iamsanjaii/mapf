@@ -5,6 +5,8 @@ Examples
   python run_doi.py --demo fleet --replay            # 8 robots, 4 pits in a wall, with an ASCII replay
   python run_doi.py --scenario single_pit --robots 12 --policy rof,never,central --seed 3
   python run_doi.py --scenario incidents_aisles --intake oracle --gate --policy rof --robots 8
+  python run_doi.py --demo toy --gif toy.gif         # save a side-by-side animation (never vs rof)
+  python run_doi.py --guide                          # plain-language guide to every flag
   python run_doi.py --list
 """
 import argparse
@@ -16,7 +18,9 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.doi.config import POLICIES, SimConfig
+from src.doi.animate import animate_runs
 from src.doi.metrics import hindsight_ratios
+from src.doi.narrate import ARM_NOTES, COLUMN_NOTES, FLAG_GUIDE, SCENARIO_NOTES, events
 from src.doi.runner import run_episode
 from src.doi.scenarios import DEFAULTS, build_scenario, scenario_from_ascii
 from src.environment.grid import CellType
@@ -27,19 +31,6 @@ ROBOT_GLYPHS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 LEGEND = """Legend:  # wall   P pit (blocked until filled)   o filled pit   X obstruction (incident)
          D depot (holds kits)   0-9,a-z robots   . free cell"""
-
-ARM_NOTES = {
-    "never": "never edits the map (pays every detour)",
-    "myopic": "edits only if ONE task's detour already pays for the edit",
-    "eager": "edits as soon as any detour is seen (theta = 0)",
-    "rof": "Rent-or-Fill: edits when the fleet's accumulated detour cost reaches the edit cost",
-    "rof_pit": "Rent-or-Fill with a per-cell ledger (ablation)",
-    "rof_local": "Rent-or-Fill without sharing the ledger (ablation)",
-    "central": "Rent-or-Fill with one omniscient ledger (cost of decentralisation)",
-    "hindsight": "benchmark: knows all tasks, opens the best pits at t=0 (charged the buy cost)",
-    "free": "benchmark: every blocked cell is open for free",
-}
-
 
 def build(args):
     if args.demo == "toy":
@@ -84,25 +75,6 @@ def render(scenario, t, result, show_goals=False):
     return "\n".join("  " + " ".join(row) for row in cells)
 
 
-def events(result, scenario):
-    ev = []
-    for tr in result.triggers:
-        rel = ">=" if tr["known"] >= tr["buy"] else "<  (theta = 0 fires on any positive evidence)"
-        ev.append((tr["tick"], f"robot {tr['robot']} TRIGGER: known detour cost {tr['known']:.0f} {rel} buy cost "
-                               f"{tr['buy']:.0f} for pits {list(tr['pits'])}"))
-    for e in result.edits:
-        ev.append((e["claim_tick"], f"claim/launch for pit {e['pit']} (offered at tick {e['trigger_tick']}"
-                                    f"{', approval wait ' + str(e['approval_wait']) if e['approval_wait'] else ''})"))
-        ev.append((e["fill_tick"], f"FILLED pit {e['pit']}: estimated cost {e['B_est']:.0f}, realised "
-                                   f"{e['B_real']:.0f}"))
-    for oid, tick in sorted(result.appeared_at.items()):
-        inc = next(i for i in scenario.incidents if i.oid == oid)
-        ev.append((tick, f"incident {oid} appears at {list(inc.cells)} ({inc.kind}, {inc.cls})"))
-    if result.stalled:
-        ev.append((result.ticks, "STALLED: no progress for stall_ticks"))
-    return sorted(ev, key=lambda x: x[0])
-
-
 def summarise(result):
     return (f"J = {result.J:.0f}  (moves {result.moves - result.carried_steps} + waits {result.waits} + "
             f"carried {result.carried_steps} x kappa + fills {result.fills} x fee)   ticks = {result.ticks}   "
@@ -135,12 +107,31 @@ def main(argv=None):
     ap.add_argument("--replay-every", type=int, default=None, help="ticks between frames")
     ap.add_argument("--live", action="store_true", help="animate the replay in the terminal")
     ap.add_argument("--replay-policy", default=None, help="arm to replay (default: rof if run, else the first)")
+    ap.add_argument("--gif", default=None, metavar="PATH", help="save a side-by-side animation as a GIF")
+    ap.add_argument("--gif-arms", default=None, help="arms shown in the animation (default never,rof)")
+    ap.add_argument("--fps", type=int, default=6)
+    ap.add_argument("--show", action="store_true", help="show the animation in a window")
+    ap.add_argument("--guide", action="store_true", help="explain every flag and output column, then exit")
     ap.add_argument("--no-benchmarks", action="store_true", help="skip the free/hindsight benchmark runs")
     args = ap.parse_args(argv)
 
+    if args.guide:
+        for title, rows in FLAG_GUIDE:
+            print(f"\n{title}")
+            for flag, what, effect in rows:
+                print(f"  {flag:28s} {what}")
+                if effect:
+                    print(f"  {'':28s}   -> {effect}")
+        print("\nHOW TO READ THE TABLE")
+        for col, text in COLUMN_NOTES:
+            print(f"  {col:10s} {text}")
+        return 0
     if args.list:
-        print("scenarios:", ", ".join(sorted(DEFAULTS)))
-        print("policies :")
+        print("scenarios (S = pits known from the start, D = obstructions appear during the run):")
+        for name in sorted(DEFAULTS):
+            fam, text = SCENARIO_NOTES.get(name, ("?", ""))
+            print(f"  {name:20s} [{fam}] {text}")
+        print("\narms (--policy):")
         for name in sorted(POLICIES):
             print(f"  {name:10s} {ARM_NOTES.get(name, '')}")
         return 0
@@ -227,6 +218,16 @@ def main(argv=None):
         print("HR_av = (J_arm - J_free) / (J_hindsight - J_free): 1.0 would match hindsight, ski-rental theory predicts about 2.")
     if "central" in runs:
         print("PoD = J_arm / J_central: what the arm loses by deciding from local, delayed information.")
+
+    if args.gif or args.show:
+        arms = [a.strip() for a in (args.gif_arms.split(",") if args.gif_arms else
+                                    [p for p in ("never", "rof") if p in runs] or policies[:2])]
+        missing = [a for a in arms if a not in runs]
+        if missing:
+            ap.error(f"--gif-arms {missing} were not run; add them to --policy")
+        saved = animate_runs(scenario, {a: runs[a] for a in arms}, cfg, path=args.gif, show=args.show, fps=args.fps)
+        if saved:
+            print(f"\nanimation saved to {saved}")
 
     if args.replay or args.live:
         chosen = args.replay_policy or ("rof" if "rof" in runs else policies[0])

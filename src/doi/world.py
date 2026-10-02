@@ -77,6 +77,7 @@ class World:
         self.overrides = 0
         self.fills = 0
         self.trajectory: Dict[int, List[Pos]] = {i: [self.pos[i]] for i in range(n)}
+        self.carry_trace: Dict[int, List[bool]] = {i: [False] for i in range(n)}
         self.counters: Dict[int, Dict[str, int]] = {i: {k: 0 for k in COUNTER_KEYS} for i in range(n)}
         self.incident_cls: Dict[Pos, str] = {c: inc.cls for inc in scenario.incidents for c in inc.cells}
         self._suppressed: Set[int] = set()
@@ -241,6 +242,7 @@ class World:
             results[i] = ActionResult(reason == "", reason, self.pos[i], self.blocked_ticks[i], self.carrying[i])
         for i in self.pos:
             self.trajectory[i].append(self.pos[i])
+            self.carry_trace[i].append(self.carrying[i])
         return results
 
     def _pickup(self, i: int) -> str:
