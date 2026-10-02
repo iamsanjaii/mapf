@@ -1,4 +1,4 @@
-"""Local space-time A* with vertex reservations, used by agents for collision-aware motion."""
+"""Local space-time A* with vertex and swap reservations, used by agents for collision-aware motion."""
 import heapq
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -30,12 +30,12 @@ def plan_spacetime(passable: PassFn, start: Pos, goal: Pos, t0: int,
             return path[::-1]
         if k >= max_len:
             continue
-        nxt_tick = t0 + k + 1
-        cur_taken = (cur, nxt_tick) in reserved
-        options: List[Pos] = []
+        now, nxt = t0 + k, t0 + k + 1
+        cur_taken = (cur, nxt) in reserved
+        options = [(cur[0] + dr, cur[1] + dc) for dr, dc in DIRS]
+        options = [n for n in options if passable(n) and n in h and (n, nxt) not in reserved
+                   and not (cur_taken and (n, now) in reserved)]
         if not cur_taken:
-            options = [(cur[0] + dr, cur[1] + dc) for dr, dc in DIRS]
-            options = [n for n in options if passable(n) and n in h and (n, nxt_tick) not in reserved]
             options.append(cur)
         for n in options:
             if (n, k + 1) in seen:

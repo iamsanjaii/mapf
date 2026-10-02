@@ -50,7 +50,14 @@ def test_start_equals_goal_and_ignores_own_reservation():
     assert plan_spacetime(pf, (0, 1), (0, 1), 3, {((0, 1), 3)}, {(0, 1): 0}, 10) == [(0, 1)]
 
 
-def test_own_cell_reserved_next_tick_leaves_no_successor():
-    pf, H, W = setup(["..."])
+def test_cannot_wait_in_a_cell_reserved_next_tick_but_can_step_aside():
+    pf, H, W = setup(["...", "..."])
     reserved = {((0, 0), 1)}
+    p = plan_spacetime(pf, (0, 0), (0, 2), 0, reserved, hmap(pf, (0, 2), H, W), 10)
+    assert p is not None and p[1] != (0, 0) and p[-1] == (0, 2)
+
+
+def test_swap_with_reserved_cell_is_still_rejected_when_no_room():
+    pf, H, W = setup(["..."])
+    reserved = {((0, 0), 1), ((0, 1), 0)}
     assert plan_spacetime(pf, (0, 0), (0, 2), 0, reserved, hmap(pf, (0, 2), H, W), 10) is None
