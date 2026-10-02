@@ -257,6 +257,8 @@ Every arm runs on the **same map and same tasks**, so the only difference is the
 | **`rof`** | Pushes when the ledger's saving reaches `theta × price` (**the method**) |
 | `rof_local` | The same, but the ledger holds only the robot's own tasks |
 | `rof_f` | The same, but it forecasts the saving over the tasks still to come |
+| `rof_r` | Rent-or-Fill with a random threshold between 0 and 1 times the price (expected ratio e/(e-1)) |
+| `rof_p` | Rent-or-Fill that lowers its threshold when its forecast says the push will pay, and raises it when not |
 | `central` | The same rule with one omniscient ledger and map (what a boss would do) |
 | `free` | Benchmark: every obstacle gone at tick 0, for free |
 | `hindsight` | Benchmark: knows all tasks, removes the best obstacles at tick 0, charged the lowest possible price |
@@ -339,6 +341,7 @@ Every run records these (`--verbose` prints them):
 |---|---|
 | `doi_e2_information.py` | How much does limited sharing (range, loss, delay) cost? |
 | `doi_e7_intake.py` | What does turning text reports into records cost and risk? |
+| `doi_e1_ratio.py` | E1: competitive ratio against the exact optimum in the abstract model (`experiments/doi_e1_ratio.py`) |
 
 Each has a `--quick` pilot mode, and `doi_common.py` is the shared grid runner. The experiments built on the earlier pit model (single-resource validity, complements, claims, shifting demand, warehouse scale, the approval gate) were removed with it; they will be re-expressed for pushing in a later stage.
 

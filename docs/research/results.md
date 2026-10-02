@@ -30,3 +30,29 @@ Toy (`run_doi.py --demo toy`): never 40, myopic 40, eager 23, rof 31, central 31
 Robustness check: 1,120 runs (7 scenarios, 20 fresh seeds, 8 arms) completed with no stalled or unfinished
 run before the last evidence change; a smaller sweep after it is recorded in the commit that follows.
 These are checks that the simulator behaves, not results about the method.
+
+## E1 quick pilot (2026-10-03)
+
+Command: `venv/bin/python experiments/doi_e1_ratio.py --quick`
+
+```
+part  arm                    view     median ratio    max ratio  bound holds
+core  predicted              full            1.450        4.950         1.00
+core  predicted              own             1.000       10.000         1.00
+core  randomized             full            1.557        1.563         1.00
+core  randomized             own             1.175        3.375         1.00
+core  threshold              full            1.450        2.950         1.00
+core  threshold              own             1.000        8.800         1.00
+grid  never                  full            1.299        1.714            -
+grid  never                  own             1.299        1.714            -
+grid  predicted:inverted     full            1.046        1.400            -
+grid  predicted:inverted     own             1.046        1.400            -
+grid  predicted:oracle       full            1.000        1.011            -
+grid  predicted:oracle       own             1.000        1.011            -
+grid  randomized             full            1.000        1.022            -
+grid  randomized             own             1.000        1.022            -
+grid  threshold              full            1.011        1.100            -
+grid  threshold              own             1.011        1.100            -
+```
+
+Pilot only (quick mode); not a result. The full run has not been made.
