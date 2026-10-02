@@ -35,7 +35,8 @@ LEGEND = """Legend:  # wall   P pit (blocked until filled)   o filled pit   X ob
 def build(args):
     if args.demo == "toy":
         scenario = scenario_from_ascii(TOY_ROWS, [(1, 2)], [TOY_TASKS], depot_stock=2, name="toy")
-        cfg = SimConfig(n_robots=1, tasks_per_robot=len(TOY_TASKS), claim=False, debug_checks=True)
+        cfg = SimConfig(n_robots=1, tasks_per_robot=len(TOY_TASKS), kappa=args.kappa, fee=args.fee,
+                        claim=(args.claim == "on"), theta=args.theta, debug_checks=True)
         return cfg, scenario
     params = {}
     if args.p_false is not None:
@@ -92,7 +93,8 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--kappa", type=float, default=4.0, help="cost per carried step")
     ap.add_argument("--fee", type=float, default=1.0, help="cost per edit")
-    ap.add_argument("--claim", choices=["on", "off"], default="on")
+    ap.add_argument("--claim", choices=["on", "off"], default=None,
+                    help="default: on, except off in --demo toy")
     ap.add_argument("--r-comm", type=float, default=8.0, help="ledger radius (0 = no sharing, inf = global)")
     ap.add_argument("--loss", type=float, default=0.0, help="ledger message loss probability")
     ap.add_argument("--latency", type=int, default=1)
@@ -114,6 +116,8 @@ def main(argv=None):
     ap.add_argument("--guide", action="store_true", help="explain every flag and output column, then exit")
     ap.add_argument("--no-benchmarks", action="store_true", help="skip the free/hindsight benchmark runs")
     args = ap.parse_args(argv)
+    if args.claim is None:
+        args.claim = "off" if args.demo == "toy" else "on"
 
     if args.guide:
         for title, rows in FLAG_GUIDE:
