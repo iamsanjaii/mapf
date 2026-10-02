@@ -1,6 +1,6 @@
 """run_episode: the tick loop tying world, network, agents and policy together."""
 import time
-from typing import Optional
+from typing import Dict, Optional, Sequence
 
 from src.doi.agent import RobotAgent
 from src.doi.config import SimConfig
@@ -99,4 +99,9 @@ def build_result(cfg, policy, world, network, agents, shared, ticks, stalled, ru
         wrong_class_attempts=sum(c["wrong_class_attempts"] for c in world.counters.values()),
         final_stock=dict(world.stock), runtime_ms=runtime_ms,
         hindsight_buy=policy.hindsight_buy if isinstance(policy, HindsightPolicy) else 0.0,
-        trajectory={i: list(p) for i, p in world.trajectory.items()})
+        trajectory={i: list(p) for i, p in world.trajectory.items()}, scenario=scenario)
+
+
+def run_arms(cfg: SimConfig, arms: Sequence[str]) -> Dict[str, RunResult]:
+    scenario = build_scenario(cfg)
+    return {name: run_episode(cfg.replace(policy=name), scenario=scenario) for name in arms}
