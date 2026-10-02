@@ -9,8 +9,12 @@ Pos = Tuple[int, int]
 
 def plan_spacetime(passable: PassFn, start: Pos, goal: Pos, t0: int,
                    reserved: Set[Tuple[Pos, int]], h: Dict[Pos, int],
-                   max_len: int) -> Optional[List[Pos]]:
-    """path[k] is the cell at tick t0 + k; waiting is a repeated cell. None when the goal is out of reach."""
+                   max_len: int, window: Optional[int] = None) -> Optional[List[Pos]]:
+    """path[k] is the cell at tick t0 + k; waiting is a repeated cell. None when the goal is out of reach.
+
+    With `window = P` the search with reservations stops at depth P and the path continues down the BFS
+    gradient `h` to the goal without reservations (the caller replans before the tail is reached).
+    """
     if start == goal:
         return [start]
     if start not in h:
@@ -21,13 +25,21 @@ def plan_spacetime(passable: PassFn, start: Pos, goal: Pos, t0: int,
     seen = {(start, 0)}
     while heap:
         _f, k, _c, cur = heapq.heappop(heap)
-        if cur == goal:
+        if cur == goal or (window is not None and k >= window):
             path = [cur]
             node = (cur, k)
             while node in parent:
                 node = parent[node]
                 path.append(node[0])
-            return path[::-1]
+            path = path[::-1]
+            while path[-1] != goal:
+                last = path[-1]
+                step = min((n for n in ((last[0] + dr, last[1] + dc) for dr, dc in DIRS)
+                            if n in h and h[n] == h[last] - 1), default=None)
+                if step is None:
+                    return None
+                path.append(step)
+            return path
         if k >= max_len:
             continue
         now, nxt = t0 + k, t0 + k + 1

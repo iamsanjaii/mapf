@@ -87,7 +87,8 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
     scenario = scenario or build_scenario(cfg)
     policy = policy or make_policy(cfg)
     shared = Shared(engine=EvidenceEngine(scenario.grid,
-                                          cfg.unreachable_cost_for(scenario.grid.height, scenario.grid.width)))
+                                          cfg.unreachable_cost_for(scenario.grid.height, scenario.grid.width),
+                                          cfg.record_epoch))
     shared.supervisor = Supervisor(scenario, cfg)
     policy.prepare(scenario, cfg, shared)
     world = World(scenario, cfg)
@@ -102,7 +103,7 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
             a.belief.filled.add(c)
 
     ticks, stalled, idle = 0, False, 0
-    for t in range(cfg.max_ticks):
+    for t in range(cfg.horizon or cfg.max_ticks):
         active = [a for a in agents if not a.finished]
         if not active:
             break
@@ -163,10 +164,10 @@ def build_result(cfg, policy, world, network, agents, shared, ticks, stalled, ru
     unfinished = sum(len(a.tasks) - a.task_idx for a in agents)
     done = sum(a.task_idx for a in agents)
     delay = float(sum(a.completed_tick + 1 for a in agents if a.finished)
-                  + cfg.max_ticks * sum(1 for a in agents if not a.finished))
+                  + (cfg.horizon or cfg.max_ticks) * sum(1 for a in agents if not a.finished))
     infos = sorted((i for a in agents for i in a.plan_infos), key=lambda i: (i.robot, i.task_idx))
     return RunResult(
-        cfg=cfg.to_dict(), policy=policy.name, J=J, J_censored=J + U * unfinished, delay=delay,
+        cfg=cfg.to_dict(), policy=policy.name, J=J, J_censored=J if cfg.horizon else J + U * unfinished, delay=delay,
         throughput=1000.0 * done / max(1, ticks), moves=moves, waits=waits, carried_steps=carried,
         fills=fills, fee_total=cfg.fee * fills, unfinished_tasks=unfinished, stalled=stalled, ticks=ticks,
         messages=network.stats.as_dict(), traffic_messages=network.traffic_stats.as_dict(),

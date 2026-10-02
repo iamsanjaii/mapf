@@ -10,9 +10,10 @@ Pos = Tuple[int, int]
 
 
 class EvidenceEngine:
-    def __init__(self, grid: Grid, unreachable: float) -> None:
+    def __init__(self, grid: Grid, unreachable: float, record_epoch: Optional[int] = None) -> None:
         self.grid = grid
         self.unreachable = unreachable
+        self.record_epoch = record_epoch
         self._cache: Dict[tuple, object] = {}
         self._contributors: Dict[BundleKey, FrozenSet[int]] = {}
 
@@ -52,6 +53,22 @@ class EvidenceEngine:
                 if bundle and c > 0:
                     ev[bundle] = ev.get(bundle, 0.0) + c
                     who.setdefault(bundle, set()).add(r.robot)
+        for (robot, origin, dest, epoch), (rent_sum, count) in belief.agg.entries():
+            if window is not None and (epoch + 1) * self.record_epoch - 1 < now - window:
+                continue
+            res = self._lookup(origin, dest, pits, filled, hard, per_pit)
+            if per_pit:
+                for p, rent in sorted(res.items()):
+                    c = min(rent_sum, count * rent)
+                    if c > 0:
+                        ev[(p,)] = ev.get((p,), 0.0) + c
+                        who.setdefault((p,), set()).add(robot)
+            else:
+                bundle = tuple(sorted(res.bundle))
+                c = min(rent_sum, count * res.rent)
+                if bundle and c > 0:
+                    ev[bundle] = ev.get(bundle, 0.0) + c
+                    who.setdefault(bundle, set()).add(robot)
         if extrapolate:
             census = len(belief.census.items())
             for key in ev:

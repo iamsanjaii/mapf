@@ -142,7 +142,8 @@ def _mean(xs: List[float]) -> float:
 
 
 def summary_row(result: RunResult, ratios: Optional[Dict[str, float]] = None,
-                pod: Optional[float] = None) -> dict:
+                pod: Optional[float] = None, cheap: bool = False) -> dict:
+    """`cheap` skips the metrics that recompute paths per planned task (needed at Stage 1 scale)."""
     cfg = SimConfig(**result.cfg)
     scenario = result.scenario
     ratios = ratios or {}
@@ -160,10 +161,10 @@ def summary_row(result: RunResult, ratios: Optional[Dict[str, float]] = None,
         "dropped": result.messages["dropped"], "message_units": result.messages["units"],
         "traffic_units": result.traffic_messages["units"],
         "overrides_per_1000": 1000.0 * result.overrides / max(1, result.ticks),
-        "stale_detour_cost": stale_detour_cost(result, scenario, cfg) if scenario is not None else nan,
-        "false_report_cost": false_report_cost(result, scenario, cfg) if scenario is not None else nan,
+        "stale_detour_cost": stale_detour_cost(result, scenario, cfg) if scenario is not None and not cheap else nan,
+        "false_report_cost": false_report_cost(result, scenario, cfg) if scenario is not None and not cheap else nan,
         "mean_coverage": _mean([r["coverage"] for r in true_rent_at_triggers(result)])
-        if scenario is not None else nan,
+        if scenario is not None and not cheap else nan,
         "mean_B_est": _mean([e["B_est"] for e in result.edits]),
         "mean_B_real": _mean([e["B_real"] for e in result.edits]),
         "mean_approval_wait": _mean([e["approval_wait"] for e in result.edits]),

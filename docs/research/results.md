@@ -83,3 +83,28 @@ E7 and E8 a few hours each (family D runs are slower). In total roughly one day 
 | 6 | Task 12 | `RunResult` carries its scenario. | Post-hoc metrics need the grid. | Memory only. |
 | 7 | Task 14 Step 5 | Prompt pilot skipped. | No endpoint, no cost approval. | `PROMPT_VERSION` not yet tuned on dev. |
 | 8 | Task 18 | No tag, no full runs. | See above. | Time. |
+
+# Stage 1 (warehouse maps, scaling)
+
+Implemented and tested: MovingAI loader, `warehouse_pits` and `warehouse_incidents` scenarios, aggregated
+records (`record_epoch`), delta-state gossip (`delta_gossip`, `full_sync_period`), the planning window
+(`plan_window`), `horizon` runs with throughput as the primary metric, and `experiments/doi_e6_scaling.py`.
+Stage 0 behaviour is unchanged with the defaults (all earlier tests pass untouched).
+
+**Not done: the real E6 run.** No MovingAI or League of Robot Runners map is in `data/maps/`. The plan
+requires asking before downloading, so nothing was fetched; E6 was exercised only on a synthetic
+warehouse (`write_synthetic_warehouse`, 26x31), and the H2 effect size and H6 are therefore not reported.
+
+Observations from the synthetic pilot (not results):
+
+* Per-tick cost grows faster than linearly in N because ledger traffic grows with the neighbour count:
+  on a 61x81 synthetic map, 20 ms per tick at N = 50 and 59 ms per tick at N = 100 (`r_comm = 8`,
+  delta gossip on). N = 500 over 2000 ticks is projected at well over the plan's 10-minute limit per
+  run, so by the plan's rule N has to be reduced when E6 is run; record the N actually used.
+* Delta gossip lowers ledger units per run (tested against full-state gossip) but a receiver that misses
+  a delta only recovers it at the next full sync (`full_sync_period` ticks).
+* `hindsight` is skipped for horizon runs (a whole-workload static benchmark) and the per-task post-hoc
+  metrics (`stale_detour_cost`, `false_report_cost`, `mean_coverage`) are NaN there, because they
+  recompute paths for every planned task.
+* Warehouse incident cells can disconnect the map; goals are drawn from the largest component with all
+  edits open, so a permanent `needs_human` cell can leave goals unreachable for some robots.

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from src.doi.config import SimConfig
+from src.doi.maps import load_movingai
 from src.doi.rng import stream
 from src.environment.generator import EnvironmentGenerator
 from src.environment.grid import CellType, Grid
@@ -27,6 +28,9 @@ DEFAULTS: Dict[str, Dict[str, Any]] = {
                   door_rows=(6, 7, 8), depot_dist=2, depot_row=7, stock=4, q_cross=0.8,
                   shift_after_task=10, hot_before=(0, 6), hot_after=(8, 14), q_hot=0.8),
     "random_pits": dict(H=20, W=20, obstacle_density=0.10, pit_density=0.04, sandbag_count=2),
+    "warehouse_pits": dict(map_path=None, n_pits=6, n_stations=2, stock=6),
+    "warehouse_incidents": dict(map_path=None, n_stations=2, n_incidents=4, **{**_INCIDENT_COMMON, "stock": 6,
+                                                                                 "appear_max": 1000}),
     "incidents_room": dict(n_incidents=2, q_cross=0.8, **_INCIDENT_COMMON),
     "incidents_aisles": dict(n_incidents=4, **_INCIDENT_COMMON),
 }
@@ -331,12 +335,118 @@ def _incidents_aisles(cfg: SimConfig, params: Dict[str, Any]) -> Scenario:
                     meta={"params": params, "seed": cfg.seed})
 
 
+def _component_labels(grid: Grid) -> Dict[Pos, int]:
+    """Component id for every non-obstacle cell (all pits open)."""
+    label: Dict[Pos, int] = {}
+    n = 0
+    for r in range(grid.height):
+        for c in range(grid.width):
+            if (r, c) in label or grid.get(r, c) == CellType.OBSTACLE:
+                continue
+            label[(r, c)] = n
+            queue = deque([(r, c)])
+            while queue:
+                cr, cc = queue.popleft()
+                for dr, dc in ((-1, 0), (1, 0), (0, 1), (0, -1)):
+                    nb = (cr + dr, cc + dc)
+                    if nb not in label and grid.in_bounds(*nb) and grid.get(*nb) != CellType.OBSTACLE:
+                        label[nb] = n
+                        queue.append(nb)
+            n += 1
+    return label
+
+
+def _corridor_cells(grid: Grid, cells: Sequence[Pos]) -> List[Pos]:
+    """Free cells whose open neighbours are exactly two and opposite (a one-cell-wide passage)."""
+    out = []
+    for r, c in cells:
+        open_n = [(dr, dc) for dr, dc in ((-1, 0), (1, 0), (0, 1), (0, -1))
+                  if grid.in_bounds(r + dr, c + dc) and grid.get(r + dr, c + dc) != CellType.OBSTACLE]
+        if len(open_n) == 2 and open_n[0][0] == -open_n[1][0] and open_n[0][1] == -open_n[1][1]:
+            out.append((r, c))
+    return out
+
+
+def _warehouse_common(cfg: SimConfig, params: Dict[str, Any]):
+    path = params.get("map_path") or cfg.map_path
+    if not path:
+        raise ValueError("warehouse scenarios need map_path (cfg.map_path or scenario_params)")
+    grid = load_movingai(path)
+    label = _component_labels(grid)
+    sizes: Dict[int, int] = {}
+    for comp in label.values():
+        sizes[comp] = sizes.get(comp, 0) + 1
+    main = max(sizes, key=lambda k: (sizes[k], -k))
+    cells = sorted(c for c, comp in label.items() if comp == main)
+    corridors = _corridor_cells(grid, cells)
+    H, W = grid.height, grid.width
+    edge = [c for c in cells if min(c[0], H - 1 - c[0], c[1], W - 1 - c[1]) <= 2 and c not in set(corridors)]
+    if len(edge) < params["n_stations"]:
+        raise ValueError("not enough cells near the map border for the requested stations")
+    stations = sorted(stream(cfg.seed, "stations").sample(edge, params["n_stations"]))
+    return grid, cells, corridors, stations
+
+
+def _warehouse_agents(cfg: SimConfig, cells: List[Pos], exclude: Set[Pos]):
+    pool = [c for c in cells if c not in exclude]
+    starts = _draw_starts(cfg, [pool] * cfg.n_robots)
+    k = cfg.horizon // 5 + 50 if cfg.horizon else cfg.tasks_per_robot
+    tasks: List[List[Pos]] = []
+    for i in range(cfg.n_robots):
+        rng = stream(cfg.seed, f"tasks-{i}")
+        prev, goals = starts[i], []
+        for _ in range(k):
+            goal = rng.choice(pool)
+            while goal == prev:
+                goal = rng.choice(pool)
+            goals.append(goal)
+            prev = goal
+        tasks.append(goals)
+    return starts, tasks
+
+
+def _warehouse_pits(cfg: SimConfig, params: Dict[str, Any]) -> Scenario:
+    grid, cells, corridors, stations = _warehouse_common(cfg, params)
+    if len(corridors) < params["n_pits"]:
+        raise ValueError("not enough one-cell corridors for the requested pits")
+    pits = sorted(stream(cfg.seed, "pits").sample(sorted(set(corridors) - set(stations)), params["n_pits"]))
+    for p in pits:
+        grid.set(p[0], p[1], CellType.PIT)
+    depots = {st: params["stock"] for st in stations}
+    for st in stations:
+        grid.set(st[0], st[1], CellType.SANDBAG)
+    starts, tasks = _warehouse_agents(cfg, cells, set(pits) | set(stations))
+    return Scenario(name=cfg.scenario, family="S", grid=grid, pits=pits, depots=depots, starts=starts,
+                    tasks=tasks, meta={"params": params, "seed": cfg.seed})
+
+
+def _warehouse_incidents(cfg: SimConfig, params: Dict[str, Any]) -> Scenario:
+    grid, cells, corridors, stations = _warehouse_common(cfg, params)
+    cand = sorted(set(corridors) - set(stations))
+    if len(cand) < params["n_incidents"]:
+        raise ValueError("not enough one-cell corridors for the requested incidents")
+    depots = {st: params["stock"] for st in stations}
+    for st in stations:
+        grid.set(st[0], st[1], CellType.SANDBAG)
+    locations = {f"corridor {r}-{c}": ((r, c),) for r, c in cand}
+    incidents, reports = _incidents_and_reports(cfg, params, set(cand), locations, "rack_damage")
+    blocked = {c for inc in incidents for c in inc.cells}
+    starts, tasks = _warehouse_agents(cfg, cells, blocked | set(stations))
+    return Scenario(name=cfg.scenario, family="D", grid=grid, pits=[], depots=depots, starts=starts,
+                    tasks=tasks, incidents=incidents, reports=reports, locations=locations,
+                    meta={"params": params, "seed": cfg.seed})
+
+
 def build_scenario(cfg: SimConfig) -> Scenario:
     params = _resolve_params(cfg)
     if cfg.scenario in _TWO_ROOM:
         return _two_room(cfg, params)
     if cfg.scenario == "random_pits":
         return _random_pits(cfg, params)
+    if cfg.scenario == "warehouse_pits":
+        return _warehouse_pits(cfg, params)
+    if cfg.scenario == "warehouse_incidents":
+        return _warehouse_incidents(cfg, params)
     if cfg.scenario == "incidents_room":
         return _incidents_room(cfg, params)
     return _incidents_aisles(cfg, params)

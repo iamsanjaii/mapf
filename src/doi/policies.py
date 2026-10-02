@@ -88,6 +88,13 @@ def buy_cost(agent: "RobotAgent", pits: Tuple[Pos, ...]) -> Tuple[float, Tuple[f
     return buy_cost_for(agent.belief, agent.grid, pits, agent.cfg)
 
 
+def record_rent(belief: BeliefState, rec: RentRecord, cfg: SimConfig) -> None:
+    if cfg.record_epoch:
+        belief.add_rent(rec, cfg.record_epoch)
+    else:
+        belief.add_record(rec)
+
+
 def _eligible(belief: BeliefState, pits: Tuple[Pos, ...]) -> bool:
     """Spec 4.4: only confirmed cells whose class is robot_clearable may appear in a firing set."""
     return all(belief.status(p) == "confirmed" and belief.cls.get(p) == CLASS_CODE["robot_clearable"]
@@ -128,7 +135,8 @@ class RoFPolicy(FillPolicy):
 
     def on_task_planned(self, agent, info, t) -> None:
         if info.rent > 0:
-            agent.belief.add_record(RentRecord(agent.id, info.task_idx, info.start, info.goal, t, info.rent))
+            record_rent(agent.belief, RentRecord(agent.id, info.task_idx, info.start, info.goal, t, info.rent),
+                        agent.cfg)
 
     def propose(self, agent, t) -> Optional[HaulProposal]:
         belief = agent.belief
@@ -201,8 +209,8 @@ class CentralPolicy(FillPolicy):
 
     def on_task_planned(self, agent, info, t) -> None:
         if info.rent > 0:
-            self.shared.global_belief.add_record(
-                RentRecord(agent.id, info.task_idx, info.start, info.goal, t, info.rent))
+            record_rent(self.shared.global_belief,
+                        RentRecord(agent.id, info.task_idx, info.start, info.goal, t, info.rent), self.cfg)
 
     def sync(self, world, agents, t: int) -> None:
         g = self.shared.global_belief

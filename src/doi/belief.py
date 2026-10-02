@@ -1,8 +1,8 @@
 """BeliefState: one robot's CRDT view of records, edits, cell status, stock, claims and approvals."""
 from typing import Any, Dict, FrozenSet, Sequence, Tuple
 
-from src.doi.crdt import (ApprovalSet, ClaimSet, GSet, MaxRegisterMap, ObstructionRecord, ObstructionSet,
-                          PNStock, RecordSet, RentRecord, Ticket)
+from src.doi.crdt import (AggRecordSet, ApprovalSet, ClaimSet, Clock, GSet, MaxRegisterMap, ObstructionRecord,
+                          ObstructionSet, PNStock, RecordSet, RentRecord, Ticket)
 
 Pos = Tuple[int, int]
 CLASS_CODE = {"unknown": 0, "robot_clearable": 1, "needs_human": 2}
@@ -12,6 +12,7 @@ class BeliefState:
     def __init__(self, robot_id: int, depots: Dict[Pos, int], static_pits: Sequence[Pos]) -> None:
         self.robot_id = robot_id
         self.records = RecordSet()
+        self.agg = AggRecordSet()
         self.filled = GSet()
         self.stock = PNStock(depots)
         self.claims = ClaimSet()
@@ -26,12 +27,24 @@ class BeliefState:
         for p in static_pits:
             self.blocked_tick.raise_to(p, 0)
             self.cls.raise_to(p, CLASS_CODE["robot_clearable"])
+        self.clock = Clock()
+        for name in self._COMPONENTS:
+            getattr(self, name)._clock = self.clock
 
-    _COMPONENTS = ("records", "filled", "stock", "claims", "census", "report_tick", "blocked_tick",
+    @property
+    def version(self) -> int:
+        return self.clock.n
+
+    _COMPONENTS = ("records", "agg", "filled", "stock", "claims", "census", "report_tick", "blocked_tick",
                    "free_tick", "cls", "obstructions", "approvals")
 
     def add_record(self, rec: RentRecord) -> None:
         self.records.add(rec)
+        self.census.add(rec.robot)
+
+    def add_rent(self, rec: RentRecord, epoch: int) -> None:
+        """Aggregated variant of add_record: one (rent_sum, count) entry per (robot, origin, dest, epoch)."""
+        self.agg.add(rec.robot, rec.origin, rec.dest, rec.tick // epoch, rec.rent)
         self.census.add(rec.robot)
 
     def add_obstruction(self, rec: ObstructionRecord, t: int) -> None:
@@ -84,8 +97,23 @@ class BeliefState:
     def snapshot(self) -> "BeliefState":
         out = BeliefState.__new__(BeliefState)
         out.robot_id = self.robot_id
+        out.clock = Clock(self.clock.n)
         for name in self._COMPONENTS:
-            setattr(out, name, getattr(self, name).copy())
+            comp = getattr(self, name).copy()
+            comp._clock = out.clock
+            setattr(out, name, comp)
+        out.lamport = self.lamport
+        return out
+
+    def delta_since(self, v: int) -> "BeliefState":
+        """Only the entries written or merged in after local version `v`."""
+        out = BeliefState.__new__(BeliefState)
+        out.robot_id = self.robot_id
+        out.clock = Clock()
+        for name in self._COMPONENTS:
+            comp = getattr(self, name).delta(v)
+            comp._clock = out.clock
+            setattr(out, name, comp)
         out.lamport = self.lamport
         return out
 

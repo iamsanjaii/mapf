@@ -46,6 +46,12 @@ class SimConfig:
     max_ticks: int = 20000
     stall_ticks: int = 100
     debug_checks: bool = False
+    horizon: Optional[int] = None
+    record_epoch: Optional[int] = None
+    delta_gossip: bool = False
+    full_sync_period: int = 20
+    plan_window: Optional[int] = None
+    map_path: Optional[str] = None
 
     def __post_init__(self) -> None:
         checks = [
@@ -64,6 +70,10 @@ class SimConfig:
             (0 <= self.p_catch <= 1, "p_catch must be in [0, 1]"),
             (self.sup_latency_median >= 1, "sup_latency_median must be >= 1"),
             (self.approval_timeout >= 1, "approval_timeout must be >= 1"),
+            (self.horizon is None or self.horizon >= 1, "horizon must be >= 1 when set"),
+            (self.record_epoch is None or self.record_epoch >= 1, "record_epoch must be >= 1 when set"),
+            (self.full_sync_period >= 1, "full_sync_period must be >= 1"),
+            (self.plan_window is None or self.plan_window >= 2, "plan_window must be >= 2 when set"),
         ]
         for ok, msg in checks:
             if not ok:

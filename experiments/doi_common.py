@@ -31,7 +31,7 @@ RESULTS_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
                             "experiments", "results", "doi")
 
 
-def extra_columns(res, scenario, cfg) -> dict:
+def extra_columns(res, scenario, cfg, cheap: bool = False) -> dict:
     """Per-run quantities the experiment analyses need beyond summary_row."""
     rents = [i.rent for i in res.plan_infos]
     out = {"rent_total": float(sum(rents)), "r_max": float(max(rents)) if rents else 0.0,
@@ -39,10 +39,10 @@ def extra_columns(res, scenario, cfg) -> dict:
            "buy_lb_total": float("nan"), "min_true_rent_after_first_fill": float("nan"),
            "pred_gate_cost": 0.0, "hindsight_buy": float(res.hindsight_buy),
            "n_prefilled": sum(1 for v in res.filled_at.values() if v < 0)}
-    if scenario.family != "D":
+    if scenario.family != "D" and not cheap:
         finite = [v for v in buy_lb(scenario, cfg).values() if math.isfinite(v)]
         out["buy_lb_total"] = float(sum(finite))
-    if len(res.triggers) >= 2:
+    if len(res.triggers) >= 2 and not cheap:
         trig = true_rent_at_triggers(res)
         later = [t["true_rent"] for t in trig[1:]]
         out["min_true_rent_after_first_fill"] = float(min(later))
@@ -84,9 +84,11 @@ def run_point(task) -> List[dict]:
     base, point, arms, seed, commit = task
     cfg = apply_axes(base, point, seed)
     scenario = build_scenario(cfg)
-    names = [a for a in arms if not (a == "hindsight" and scenario.family == "D")]
+    cheap = cfg.horizon is not None
+    no_hindsight = scenario.family == "D" or cheap
+    names = [a for a in arms if not (a == "hindsight" and no_hindsight)]
     for extra in BASELINES:
-        if extra not in names and not (extra == "hindsight" and scenario.family == "D"):
+        if extra not in names and not (extra == "hindsight" and no_hindsight):
             names.append(extra)
     results = {name: run_episode(cfg.replace(policy=name), scenario=scenario) for name in names}
     have_hind = "hindsight" in results
@@ -99,8 +101,8 @@ def run_point(task) -> List[dict]:
                 ratios = hindsight_ratios(res, results["hindsight"], results["free"])
             if "central" in results and name != "central":
                 pod = res.J_censored / results["central"].J_censored
-        row = summary_row(res, ratios, pod)
-        row.update(extra_columns(res, scenario, cfg))
+        row = summary_row(res, ratios, pod, cheap=cheap)
+        row.update(extra_columns(res, scenario, cfg, cheap=cheap))
         for key, value in point.items():
             row[f"axis_{key}"] = value
         row["git_commit"] = commit

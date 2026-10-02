@@ -72,6 +72,8 @@ class RobotAgent:
         self.wait_streak = 0
         self.deferred_until: Dict[Pos, int] = {}
         self._fail_sig = None
+        self._last_sent = 0
+        self._replan_at = 1 << 60
         self.evade: Optional[Tuple[Pos, Pos, int]] = None
         self._recent: List[Pos] = []
         self._planned_task = -1
@@ -204,14 +206,16 @@ class RobotAgent:
         max_len = 3 * (self.H + self.W)
         if self.pos in h:
             max_len = min(max_len, 2 * h[self.pos] + 2 * self.cfg.intent_window + 10)
-        path = plan_spacetime(pf, self.pos, goal, t, reserved, h, max_len)
+        window = self.cfg.plan_window
+        path = plan_spacetime(pf, self.pos, goal, t, reserved, h, max_len, window)
+        self._replan_at = t + max(1, window // 2) if window else 1 << 60
         if not path:
             reported = frozenset(c for c in self.belief.believed_blocked() if self.belief.status(c) == "reported")
             if reported:
                 pf2 = passable_fn(self.grid, frozenset(self.belief.filled.items()),
                                   closed=self.belief.believed_blocked() - reported)
                 path = plan_spacetime(pf2, self.pos, goal, t, reserved, bfs_dist_map(pf2, goal, self.H, self.W),
-                                      max_len)
+                                      max_len, window)
         self.plan = path if path else [self.pos]
         self._fail_sig = None if path else sig
         self.stats["replans"] += 1
@@ -293,7 +297,8 @@ class RobotAgent:
 
     def _follow_plan(self, goal: Pos, t: int) -> Action:
         if (self._plan_goal != goal or self.replan_needed or self.blocked_streak >= 2
-                or self._plan_conflict(t) or (len(self.plan) <= 1 and self.pos != goal)):
+                or self._plan_conflict(t) or t >= self._replan_at
+                or (len(self.plan) <= 1 and self.pos != goal)):
             self._replan(t, goal)
         if len(self.plan) > 1 and self.plan[1] != self.plan[0]:
             return Move(self.plan[1])
@@ -329,8 +334,19 @@ class RobotAgent:
     def outgoing(self, t: int) -> List[Message]:
         cells = tuple(self.plan[: self.cfg.intent_window + 1])
         out = [Message(self.id, "INTENT", (t, self.blocked_ticks, cells), len(cells), t)]
-        if self.policy.uses_gossip and (t % self.cfg.gossip_period == 0 or self.hauler.holds_claim()):
-            out.append(Message(self.id, "STATE", self.belief.snapshot(), self.belief.units(), t))
+        if self.policy.uses_gossip:
+            due = t % self.cfg.gossip_period == 0 or self.hauler.holds_claim()
+            if self.cfg.delta_gossip:
+                if t % self.cfg.full_sync_period == 0:
+                    out.append(Message(self.id, "STATE", self.belief.snapshot(), self.belief.units(), t))
+                    self._last_sent = self.belief.version
+                elif due:
+                    delta = self.belief.delta_since(self._last_sent)
+                    self._last_sent = self.belief.version
+                    if delta.units() > 0:
+                        out.append(Message(self.id, "STATE", delta, delta.units(), t))
+            elif due:
+                out.append(Message(self.id, "STATE", self.belief.snapshot(), self.belief.units(), t))
         return out
 
     def after_action(self, res: ActionResult, t: int) -> None:
