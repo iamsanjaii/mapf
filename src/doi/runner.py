@@ -103,6 +103,7 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
     livelock_ticks = 20 * (scenario.grid.height + scenario.grid.width)
     last_done, last_pushes, last_gain = 0, 0, 0
     waits_at_progress = {i: 0 for i in world.counters}
+    gain_tick, gain_counters, gain_push_cost = -1, {i: dict(c) for i, c in world.counters.items()}, 0.0
     for t in range(cfg.horizon or cfg.max_ticks):
         active = [a for a in agents if not a.finished]
         if not active:
@@ -149,8 +150,14 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
         done_now = sum(a.task_idx for a in agents)
         if done_now != last_done or world.removals != last_pushes:        # robots wandering is not progress
             last_done, last_pushes, last_gain = done_now, world.removals, t
+            gain_tick, gain_counters, gain_push_cost = t, {i: dict(c) for i, c in world.counters.items()}, world.push_cost
         elif t - last_gain >= livelock_ticks:
             stalled = True
+            # Robots shuffling after the last finished task or push are not a cost of the run either.
+            for i, c in gain_counters.items():
+                world.counters[i].update(c)
+            world.push_cost = gain_push_cost
+            world.tick_cost[gain_tick + 1:] = [0.0] * (len(world.tick_cost) - gain_tick - 1)
             break
     result = build_result(cfg, policy, world, network, agents, shared, ticks, stalled,
                           (time.perf_counter() - started) * 1000.0, scenario)

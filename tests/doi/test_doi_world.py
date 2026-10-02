@@ -229,12 +229,11 @@ def test_dense_fuzz_with_cycles_never_collides():
     assert w.overrides > 0
 
 
-def test_stalled_run_stops_charging_at_the_last_progress_tick():
+def test_stalled_run_stops_charging_after_its_last_progress():
     from src.doi.config import SimConfig as _Cfg
     from src.doi.runner import run_episode as _run
     from src.doi.scenarios import scenario_from_ascii as _asc
-    s = _asc([".#.", ".#.", ".#."], [(0, 0)], [[(0, 2)]])           # the goal is walled off: no robot can progress
-    a = _run(_Cfg(policy="never", n_robots=1, tasks_per_robot=1, stall_ticks=20), scenario=s)
-    b = _run(_Cfg(policy="never", n_robots=1, tasks_per_robot=1, stall_ticks=60), scenario=s)
-    assert a.stalled and b.stalled
-    assert a.J == b.J and abs(a.J - sum(a.tick_cost)) < 1e-9
+    s = _asc(["....."], [(0, 0), (0, 4)], [[(0, 4)], [(0, 0)]])     # head-on in a one-cell corridor: nobody finishes
+    r = _run(_Cfg(policy="never", n_robots=2, tasks_per_robot=1), scenario=s)
+    assert r.stalled and r.unfinished_tasks == 2
+    assert r.J == 0.0 and sum(r.tick_cost) == 0.0 and abs(r.J - sum(r.tick_cost)) < 1e-9
