@@ -67,7 +67,10 @@ class Hauler:
         self.carried_since_pickup = 0
         self.wasted_steps = 0
         self.approval_wait = 0
-        self.stats: Dict[str, int] = {"unconfirmed": 0, "issued": 0, "lost": 0, "aborts": 0}
+        self.gate_key = None
+        self.request_tick = 0
+        self.stats: Dict[str, int] = {"unconfirmed": 0, "issued": 0, "lost": 0, "aborts": 0,
+                                      "requested": 0, "timeout_approved": 0, "deferred": 0}
         self.edits: List[dict] = []
 
     def active(self) -> bool:
@@ -103,6 +106,9 @@ class Hauler:
         self.state = HaulState.PENDING
 
     def update(self, t: int) -> None:
+        if self.state == HaulState.AWAIT_APPROVAL:
+            self._update_await(t)
+            return
         if self.state != HaulState.PENDING:
             return
         a = self.agent
@@ -124,8 +130,47 @@ class Hauler:
             self.proposal = None
             return
         if cfg.gate:
-            raise NotImplementedError("the approval gate is implemented in Task 15")
+            ticket = b.next_ticket()
+            self.gate_key = (tuple(sorted(self.proposal.pits)), ticket)
+            self.request_tick = t
+            a.shared.supervisor.request(a.id, self.gate_key, tuple(self.proposal.pits), t)
+            self.stats["requested"] += 1
+            self.state = HaulState.AWAIT_APPROVAL
+            return
         self._launch(t, approval_wait=0)
+
+    def _cancel(self) -> None:
+        self.state = HaulState.NONE
+        self.proposal = None
+        self.gate_key = None
+
+    def _timeout_would_approve(self) -> bool:
+        b, cfg = self.agent.belief, self.agent.cfg
+        pits = set(self.proposal.pits)
+        if any(b.cls.get(p) != 1 for p in pits):
+            return False
+        return all(r.confidence >= cfg.approval_conf for r in b.obstructions.records() if pits & set(r.cells))
+
+    def _update_await(self, t: int) -> None:
+        a, b, cfg = self.agent, self.agent.belief, self.agent.cfg
+        if any(p in b.filled for p in self.proposal.pits):
+            self._cancel()
+            return
+        decision = b.approvals.get(self.gate_key)
+        waited = t - self.request_tick
+        if decision == "approve":
+            self._launch(t, approval_wait=waited)
+        elif decision == "veto":
+            self._cancel()
+        elif waited >= cfg.approval_timeout:
+            if self._timeout_would_approve():
+                self.stats["timeout_approved"] += 1
+                self._launch(t, approval_wait=waited)
+            else:
+                self.stats["deferred"] += 1
+                for p in self.proposal.pits:
+                    a.deferred_until[p] = t + cfg.approval_timeout
+                self._cancel()
 
     def assign(self, proposal, t: int) -> None:
         """Omniscient dispatch (central arm): no stagger, claim or approval gate."""

@@ -23,6 +23,7 @@ class Shared:
     triggers: List[dict] = field(default_factory=list)
     engine: Any = None
     global_belief: Any = None
+    supervisor: Any = None
     agents: List[Any] = field(default_factory=list)
 
 
@@ -52,12 +53,21 @@ class FillPolicy(ABC):
         return frozenset()
 
 
+_BUY_CACHE: Dict[tuple, Tuple[float, Tuple[float, ...]]] = {}
+
+
 def buy_cost_for(belief: BeliefState, grid, pits: Tuple[Pos, ...], cfg: SimConfig) -> Tuple[float, Tuple[float, ...]]:
     """Estimated cost of filling `pits` (fee plus kappa times the carry from the nearest stocked depot)."""
     opened = frozenset(pits)
-    pf = passable_fn(grid, frozenset(belief.filled.items()) | opened, closed=belief.believed_blocked() - opened)
-    depot_maps = [bfs_dist_map(pf, d, grid.height, grid.width)
-                  for d in sorted(belief.stock.initial) if belief.stock.remaining(d) > 0]
+    filled = frozenset(belief.filled.items())
+    closed = belief.believed_blocked() - opened
+    stocked = tuple(d for d in sorted(belief.stock.initial) if belief.stock.remaining(d) > 0)
+    key = (grid.array.tobytes(), tuple(pits), filled, closed, stocked, cfg.fee, cfg.kappa)
+    hit = _BUY_CACHE.get(key)
+    if hit is not None:
+        return hit
+    pf = passable_fn(grid, filled | opened, closed=closed)
+    depot_maps = [bfs_dist_map(pf, d, grid.height, grid.width) for d in stocked]
     per: List[float] = []
     for p in pits:
         best = float("inf")
@@ -67,7 +77,11 @@ def buy_cost_for(belief: BeliefState, grid, pits: Tuple[Pos, ...], cfg: SimConfi
                 if n in dist:
                     best = min(best, cfg.fee + cfg.kappa * dist[n])
         per.append(best)
-    return float(sum(per)), tuple(per)
+    out = (float(sum(per)), tuple(per))
+    if len(_BUY_CACHE) > 4096:
+        _BUY_CACHE.clear()
+    _BUY_CACHE[key] = out
+    return out
 
 
 def buy_cost(agent: "RobotAgent", pits: Tuple[Pos, ...]) -> Tuple[float, Tuple[float, ...]]:
@@ -75,7 +89,13 @@ def buy_cost(agent: "RobotAgent", pits: Tuple[Pos, ...]) -> Tuple[float, Tuple[f
 
 
 def _eligible(belief: BeliefState, pits: Tuple[Pos, ...]) -> bool:
-    return all(belief.status(p) == "confirmed" for p in pits)
+    """Spec 4.4: only confirmed cells whose class is robot_clearable may appear in a firing set."""
+    return all(belief.status(p) == "confirmed" and belief.cls.get(p) == CLASS_CODE["robot_clearable"]
+               for p in pits)
+
+
+def _deferred(agent: "RobotAgent", pits: Tuple[Pos, ...], t: int) -> bool:
+    return any(agent.deferred_until.get(p, -1) > t for p in pits)
 
 
 def _claimed_by_other(belief: BeliefState, pits: Tuple[Pos, ...], me: int, t: int) -> bool:
@@ -116,7 +136,7 @@ class RoFPolicy(FillPolicy):
                                          per_pit=(self.keys == "pit"))
         best = None
         for T, known in ev.items():
-            if known <= 0 or not _eligible(belief, T):
+            if known <= 0 or not _eligible(belief, T) or _deferred(agent, T, t):
                 continue
             if agent.cfg.claim and _claimed_by_other(belief, T, agent.id, t):
                 continue
@@ -153,7 +173,7 @@ class MyopicPolicy(FillPolicy):
         if info is None or info.task_idx != agent.task_idx or info.rent <= 0:
             return None
         T = tuple(p for p in info.bundle if p not in agent.belief.filled)
-        if not T or not _eligible(agent.belief, T):
+        if not T or not _eligible(agent.belief, T) or _deferred(agent, T, t):
             return None
         buy, per = buy_cost(agent, T)
         if buy == float("inf") or info.rent < self.theta * buy:

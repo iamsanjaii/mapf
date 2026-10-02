@@ -8,11 +8,15 @@ from src.doi.hauler import Hauler, HaulState
 from src.doi.network import Message
 from src.doi.paths import bfs_dist_map, dream_path, passable_fn, single_pit_rents
 from src.doi.policies import FillPolicy, Shared
+from src.doi.rng import u01
 from src.doi.scenarios import Scenario
 from src.doi.spacetime import plan_spacetime
 from src.doi.world import Action, ActionResult, Move, Observation, Wait
 
 Pos = Tuple[int, int]
+DODGE_PATIENCE = 6
+EVADE_WINDOW = 16
+EVADE_TIMEOUT = 40
 
 
 @dataclass(frozen=True)
@@ -66,6 +70,10 @@ class RobotAgent:
         self.sensed_cells: FrozenSet[Pos] = frozenset()
         self._prev_sensed: FrozenSet[Pos] = frozenset()
         self.wait_streak = 0
+        self.deferred_until: Dict[Pos, int] = {}
+        self._fail_sig = None
+        self.evade: Optional[Tuple[Pos, Pos, int]] = None
+        self._recent: List[Pos] = []
         self._planned_task = -1
         self._plan_goal: Optional[Pos] = None
         self._hauled = False
@@ -108,6 +116,16 @@ class RobotAgent:
                     self.intents[m.sender] = IntentRecord(start_tick, blocked_ticks, cells)
         if self._snapshot_view() != before:
             self.replan_needed = True
+
+    def ingest_record(self, rec, t: int) -> None:
+        self.belief.add_obstruction(rec, t)
+        self.replan_needed = True
+
+    def ingest_decision(self, d, t: int) -> None:
+        self.belief.approvals.set(d.key, d.decision)
+        for cell in d.needs_human:
+            self.belief.mark_needs_human(cell)
+        self.replan_needed = True
 
     def _reservations(self, t: int) -> Set[Tuple[Pos, int]]:
         if self._reserved_cache[0] == t:
@@ -173,24 +191,117 @@ class RobotAgent:
 
     def _replan(self, t: int, goal: Pos) -> None:
         pf = self._passable()
-        h = bfs_dist_map(pf, goal, self.H, self.W)
-        path = plan_spacetime(pf, self.pos, goal, t, self._reservations(t), h, 3 * (self.H + self.W))
-        self.plan = path if path else [self.pos]
-        self._plan_goal = goal
+        reserved = self._reservations(t)
+        sig = (goal, self.pos, self.belief.believed_blocked(), len(self.belief.filled.items()),
+               frozenset((c, k - t) for c, k in reserved))
         self.replan_needed = False
         self.blocked_streak = 0
+        self._plan_goal = goal
+        if sig == self._fail_sig:
+            self.plan = [self.pos]
+            return
+        h = bfs_dist_map(pf, goal, self.H, self.W)
+        max_len = 3 * (self.H + self.W)
+        if self.pos in h:
+            max_len = min(max_len, 2 * h[self.pos] + 2 * self.cfg.intent_window + 10)
+        path = plan_spacetime(pf, self.pos, goal, t, reserved, h, max_len)
+        if not path:
+            reported = frozenset(c for c in self.belief.believed_blocked() if self.belief.status(c) == "reported")
+            if reported:
+                pf2 = passable_fn(self.grid, frozenset(self.belief.filled.items()),
+                                  closed=self.belief.believed_blocked() - reported)
+                path = plan_spacetime(pf2, self.pos, goal, t, reserved, bfs_dist_map(pf2, goal, self.H, self.W),
+                                      max_len)
+        self.plan = path if path else [self.pos]
+        self._fail_sig = None if path else sig
         self.stats["replans"] += 1
+
+    def _dodge(self, t: int) -> Optional[Pos]:
+        """Deterministic random side-step used to dissolve long mutual waits (packed queues at doorways)."""
+        pf = self._passable()
+        reserved = self._reservations(t)
+        cands = []
+        for dr, dc in ((-1, 0), (1, 0), (0, 1), (0, -1)):
+            n = (self.pos[0] + dr, self.pos[1] + dc)
+            if pf(n) and n not in self.sensed_cells and (n, t + 1) not in reserved:
+                cands.append(n)
+        if not cands:
+            return None
+        return cands[int(u01(self.cfg.seed, t, self.id, 5) * len(cands)) % len(cands)]
 
     def invalidate_plan(self) -> None:
         self._plan_goal = None
         self.replan_needed = True
 
+    def _oscillating(self) -> bool:
+        return len(self._recent) >= EVADE_WINDOW and len(set(self._recent)) <= 3
+
+    def _blocker(self, goal: Pos) -> Optional[Pos]:
+        """A stationary neighbouring robot sitting on a shortest route to the goal."""
+        stationary = self.sensed_cells & self._prev_sensed
+        near = [c for c in stationary if abs(c[0] - self.pos[0]) + abs(c[1] - self.pos[1]) == 1]
+        if not near:
+            return None
+        pf = passable_fn(self.grid, frozenset(self.belief.filled.items()), closed=self.belief.believed_blocked())
+        h = bfs_dist_map(lambda c: pf(c) or c in near, goal, self.H, self.W)
+        mine = h.get(self.pos)
+        on_route = [c for c in sorted(near) if mine is not None and h.get(c, 1 << 30) < mine]
+        return on_route[0] if on_route else None
+
+    def _evade_target(self, blocker: Pos, t: int) -> Optional[Pos]:
+        pf = self._passable()
+        avoid = {blocker}
+        for sender, rec in self.intents.items():
+            age = t - rec.start_tick
+            if 0 <= age < len(rec.cells) and rec.cells[age] == blocker:
+                avoid |= set(rec.cells[age:])
+        occupied = set(self.sensed_cells)
+        dist = {self.pos: 0}
+        frontier = [self.pos]
+        while frontier:
+            nxt = []
+            for cur in frontier:
+                for dr, dc in ((-1, 0), (1, 0), (0, 1), (0, -1)):
+                    n = (cur[0] + dr, cur[1] + dc)
+                    if n in dist or n in occupied or not pf(n):
+                        continue
+                    dist[n] = dist[cur] + 1
+                    nxt.append(n)
+            frontier = nxt
+        cands = [c for c in dist if c != self.pos and c not in avoid]
+        return min(cands, key=lambda c: (dist[c], c)) if cands else None
+
     def follow(self, goal: Pos, t: int) -> Action:
+        if self.evade is not None:
+            target, blocker, until = self.evade
+            if t >= until or (self.pos == target and blocker not in self.sensed_cells):
+                self.evade = None
+            elif self.pos == target:
+                return Wait()
+            else:
+                return self._follow_plan(target, t)
+        if self.pos != goal and self._oscillating():
+            blocker = self._blocker(goal)
+            if blocker is not None:
+                target = self._evade_target(blocker, t)
+                if target is not None:
+                    self.evade = (target, blocker, t + EVADE_TIMEOUT)
+                    self._recent = []
+                    self.invalidate_plan()
+                    return self._follow_plan(target, t)
+        return self._follow_plan(goal, t)
+
+    def _follow_plan(self, goal: Pos, t: int) -> Action:
         if (self._plan_goal != goal or self.replan_needed or self.blocked_streak >= 2
                 or self._plan_conflict(t) or (len(self.plan) <= 1 and self.pos != goal)):
             self._replan(t, goal)
         if len(self.plan) > 1 and self.plan[1] != self.plan[0]:
             return Move(self.plan[1])
+        if self.pos != goal and self.wait_streak >= DODGE_PATIENCE and u01(self.cfg.seed, t, self.id, 6) < 0.5:
+            n = self._dodge(t)
+            if n is not None:
+                self.plan = [self.pos, n]
+                return Move(n)
         return Wait()
 
     def decide(self, t: int) -> Action:
@@ -227,6 +338,7 @@ class RobotAgent:
         self.pos = res.pos
         self.blocked_ticks = res.blocked_ticks
         self.carrying = res.carrying
+        self._recent = (self._recent + [self.pos])[-EVADE_WINDOW:]
         if self._hauled:
             self.hauler.on_result(action, res, t)
         if isinstance(action, Move):

@@ -12,11 +12,30 @@ PassFn = Callable[[Pos], bool]
 DIRS = [(-1, 0), (1, 0), (0, 1), (0, -1)]
 
 
+_TABLES: Dict[bytes, Tuple[List[List[bool]], List[List[bool]]]] = {}
+
+
+def _tables(grid: Grid) -> Tuple[List[List[bool]], List[List[bool]]]:
+    key = (grid.height, grid.width, grid.array.tobytes())
+    hit = _TABLES.get(key)
+    if hit is None:
+        free = [[bool(grid.is_passable(r, c)) for c in range(grid.width)] for r in range(grid.height)]
+        pit = [[grid.get(r, c) == CellType.PIT for c in range(grid.width)] for r in range(grid.height)]
+        if len(_TABLES) > 64:
+            _TABLES.clear()
+        hit = _TABLES[key] = (free, pit)
+    return hit
+
+
 def passable_fn(grid: Grid, open_pits: FrozenSet[Pos], closed: FrozenSet[Pos] = frozenset()) -> PassFn:
+    free, pit = _tables(grid)
+    h, w = grid.height, grid.width
+
     def passable(p: Pos) -> bool:
-        if not grid.in_bounds(p[0], p[1]) or p in closed:
+        r, c = p
+        if not (0 <= r < h and 0 <= c < w) or p in closed:
             return False
-        return grid.is_passable(p[0], p[1]) or (grid.get(p[0], p[1]) == CellType.PIT and p in open_pits)
+        return free[r][c] or (pit[r][c] and p in open_pits)
     return passable
 
 

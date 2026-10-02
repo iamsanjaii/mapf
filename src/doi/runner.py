@@ -1,15 +1,84 @@
 """run_episode: the tick loop tying world, network, agents and policy together."""
+import dataclasses
+import math
 import time
-from typing import Dict, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from src.doi.agent import RobotAgent
 from src.doi.config import SimConfig
 from src.doi.evidence import EvidenceEngine
 from src.doi.metrics import RunResult
+from src.doi.crdt import ObstructionRecord
+from src.doi.incidents import location_names, locate, render_report, report_rng
 from src.doi.network import Network
 from src.doi.policies import CentralPolicy, FillPolicy, HindsightPolicy, Shared, make_policy
 from src.doi.scenarios import Scenario, build_scenario
+from src.doi.rng import u01
+from src.doi.supervisor import Supervisor
 from src.doi.world import Drop, Move, Pickup, Return, World
+
+
+class Intake:
+    """Delivers incident reports to the nearest robot as records, per the configured intake mode."""
+
+    def __init__(self, scenario: Scenario, cfg: SimConfig) -> None:
+        self.scenario, self.cfg = scenario, cfg
+        self.counts = {"reports": 0, "records": 0, "rejected": 0}
+        self.by_tick: Dict[int, List[Tuple[int, object]]] = {}
+        for idx, r in enumerate(scenario.reports):
+            self.by_tick.setdefault(r.emit_tick, []).append((idx, r))
+        self.pending: Dict[int, List[Tuple[int, ObstructionRecord]]] = {}
+        self.cache = None
+        self.names = location_names(scenario)
+        if cfg.intake.startswith("llm:"):
+            from src.doi.llm.intake import IntakeCache
+            self.model_key = cfg.intake.split(":", 1)[1]
+            self.cache = IntakeCache(cfg.intake_cache, self.model_key)
+
+    @staticmethod
+    def nearest(agents, cell) -> Optional[int]:
+        live = [a for a in agents if not a.finished]
+        if not live:
+            return None
+        return min(live, key=lambda a: (abs(a.pos[0] - cell[0]) + abs(a.pos[1] - cell[1]), a.id)).id
+
+    def emit(self, t: int, agents) -> None:
+        cfg, scenario = self.cfg, self.scenario
+        for idx, report in self.by_tick.get(t, []):
+            cells = locate(scenario, report.location)
+            node = self.nearest(agents, cells[0])
+            if node is None:
+                continue
+            self.counts["reports"] += 1
+            if cfg.intake == "none":
+                continue
+            if cfg.intake == "oracle":
+                rec, due = ObstructionRecord(report.report_id, node, report.location, cells, report.kind,
+                                             report.cls, 1, 1.0, "oracle"), t
+            else:
+                from src.doi.llm.intake import cache_key, to_record
+                text = render_report(report, report_rng(scenario, report))[0]
+                res = self.cache.get(cache_key(text, self.names))
+                if res is None:
+                    raise KeyError(f"no cached intake result for report {report.report_id}; run "
+                                   f"experiments/doi_intake_run.py --model-key {self.model_key} "
+                                   f"--scenario {scenario.name} --seeds {scenario.meta.get('seed')}..")
+                if not res.ok:
+                    self.counts["rejected"] += 1
+                    continue
+                rec = to_record(res, report.report_id, node, scenario)
+                due = t + max(1, math.ceil(res.latency_s / cfg.tick_seconds))
+            if report.cls == "needs_human" and u01(cfg.seed, idx, 77) < cfg.p_wrong_class:
+                rec = dataclasses.replace(rec, cls="robot_clearable")
+            self.pending.setdefault(due, []).append((node, rec))
+
+    def deliver(self, t: int, agents) -> None:
+        for node, rec in self.pending.pop(t, []):
+            target = node if not agents[node].finished else self.nearest(agents, rec.cells[0])
+            if target is None:
+                continue
+            agents[target].ingest_record(rec, t)
+            self.counts["records"] += 1
 
 
 def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
@@ -19,12 +88,15 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
     policy = policy or make_policy(cfg)
     shared = Shared(engine=EvidenceEngine(scenario.grid,
                                           cfg.unreachable_cost_for(scenario.grid.height, scenario.grid.width)))
+    shared.supervisor = Supervisor(scenario, cfg)
     policy.prepare(scenario, cfg, shared)
     world = World(scenario, cfg)
     world.prefill(policy.prefill_set(scenario, cfg))
     network = Network(cfg)
     agents = [RobotAgent(i, scenario, cfg, policy, shared) for i in range(len(scenario.starts))]
     shared.agents = agents
+    intake = Intake(scenario, cfg)
+    decisions = {"approved": 0, "vetoed": 0}
     for a in agents:
         for c in sorted(world.filled):
             a.belief.filled.add(c)
@@ -38,6 +110,12 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
         if isinstance(policy, CentralPolicy):
             policy.sync(world, active, t)
             policy.dispatch(active, t)
+        intake.emit(t, agents)
+        intake.deliver(t, agents)
+        for d in shared.supervisor.due(t):
+            if not agents[d.robot].finished:
+                agents[d.robot].ingest_decision(d, t)
+                decisions["approved" if d.decision == "approve" else "vetoed"] += 1
         for a in active:
             a.sense(world.observe(a.id, cfg.r_sense), t)
         inbox = network.deliver(t)
@@ -65,8 +143,14 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
         if idle >= cfg.stall_ticks:
             stalled = True
             break
-    return build_result(cfg, policy, world, network, agents, shared, ticks, stalled,
-                        (time.perf_counter() - started) * 1000.0, scenario)
+    result = build_result(cfg, policy, world, network, agents, shared, ticks, stalled,
+                          (time.perf_counter() - started) * 1000.0, scenario)
+    result.intake = dict(intake.counts)
+    result.approvals = {"requested": sum(a.hauler.stats["requested"] for a in agents),
+                        "approved": decisions["approved"], "vetoed": decisions["vetoed"],
+                        "timeout_approved": sum(a.hauler.stats["timeout_approved"] for a in agents),
+                        "deferred": sum(a.hauler.stats["deferred"] for a in agents)}
+    return result
 
 
 def build_result(cfg, policy, world, network, agents, shared, ticks, stalled, runtime_ms, scenario) -> RunResult:
