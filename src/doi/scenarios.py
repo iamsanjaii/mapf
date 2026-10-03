@@ -30,6 +30,21 @@ DEFAULTS: Dict[str, Dict[str, Any]] = {
                   shift_after_task=10, hot_before=(0, 6), hot_after=(8, 14), q_hot=0.8),
     "complements": dict(H=15, W=23, wall_cols=(7, 15), gap_row=3, door_rows=(12, 13, 14),
                         kinds=("pallet",), band=(0, 6)),
+    "warehouse_racks": dict(H=15, W=21, wall_col=10, door_rows=(12, 13, 14), q_cross=0.8,
+                            items=((2, 10, "crate"), (4, 10, "crate"), (6, 10, "crate"), (8, 10, "crate")),
+                            racks=((1, 6), (3, 6), (5, 6), (7, 6), (1, 14), (3, 14), (5, 14), (7, 14)),
+                            dump=None),
+    "dump_central": dict(H=15, W=21, wall_col=10, door_rows=(12, 13, 14), q_cross=0.8,
+                         items=((2, 10, "pallet"), (4, 10, "shelf_unit"), (6, 10, "crate"), (8, 10, "pallet")),
+                         racks=(), dump=(12, 0, 14, 2)),
+    "site_pits": dict(H=15, W=21, wall_col=10, door_rows=(12, 13, 14), q_cross=0.8,
+                      items=((2, 10, "pit"), (5, 10, "pit"), (8, 10, "pit"), (1, 7, "debris"), (4, 7, "debris"),
+                             (7, 7, "debris"), (5, 13, "debris"), (8, 13, "debris")),
+                      racks=(), dump=None),
+    "mixed": dict(H=15, W=21, wall_col=10, door_rows=(12, 13, 14), q_cross=0.8,
+                  items=((2, 10, "crate"), (4, 10, "shelf_unit"), (6, 10, "pit"), (8, 10, "pallet"),
+                         (1, 7, "debris"), (9, 13, "debris")),
+                  racks=((3, 6), (5, 6), (3, 14)), dump=(12, 0, 13, 1)),
     "random_blocks": dict(H=20, W=20, strips=3, strip_len_min=4, strip_len_max=8, pallets=3, crates=2, shelves=1),
     "warehouse_blocks": dict(map_path=None, n_blocks=6, kinds=("pallet",)),
     "warehouse_incidents": dict(map_path=None, n_incidents=4, **{**_INCIDENT_COMMON, "appear_max": 1000}),
@@ -37,6 +52,7 @@ DEFAULTS: Dict[str, Dict[str, Any]] = {
     "incidents_aisles": dict(n_incidents=4, **_INCIDENT_COMMON),
 }
 
+_CARRY_SCENES = ("warehouse_racks", "dump_central", "site_pits", "mixed")
 _TWO_ROOM = ("single_block", "two_blocks_parallel", "series_blocks", "multi_block_wall", "shift")
 _DOORS = {"north door": (2, 10), "middle door": (7, 10), "south door": (12, 10)}
 
@@ -190,6 +206,53 @@ def _two_room(cfg: SimConfig, params: Dict[str, Any]) -> Scenario:
     return Scenario(name=cfg.scenario, family="S", grid=grid, obstacles=obstacles, starts=starts, tasks=tasks,
                     meta={"rooms": {"west_cols": west_cols, "east_cols": east_cols},
                           "params": params, "seed": cfg.seed})
+
+
+def _carry_scene(cfg: SimConfig, params: Dict[str, Any]) -> Scenario:
+    """Two rooms split by a barrier. `items` are removable obstacles (crates, pits, debris, ...) given as
+    (row, col, kind): those in the barrier column sit in an opening of it, the rest lie on the floor of a room.
+    `racks` are rack cells (fixtures, not walkable, each holding one obstacle); `dump` = (r0, c0, r1, c1) is a solid
+    block of walkable dump-region cells, each holding one obstacle. The bottom door rows are the long way round."""
+    H, W, wc = params["H"], params["W"], params["wall_col"]
+    obstacles: Dict[Pos, str] = {}
+    for r, c, kind in params["items"]:
+        if kind not in KINDS:
+            raise ValueError(f"unknown obstacle kind {kind!r}: choose from {', '.join(KINDS)}")
+        if not (0 <= r < H and 0 <= c < W):
+            raise ValueError(f"item {(r, c)} is outside the map")
+        obstacles[(r, c)] = kind
+    grid = Grid(W, H)
+    for r in range(H):
+        grid.set(r, wc, CellType.OBSTACLE)
+    for r in params["door_rows"]:
+        grid.set(r, wc, CellType.FREE)
+    for (r, c) in obstacles:
+        if c == wc:
+            grid.set(r, c, CellType.FREE)
+    slots: Dict[Pos, str] = {}
+    for r, c in params["racks"]:
+        if not (0 <= r < H and 0 <= c < W) or c == wc:
+            raise ValueError(f"rack {(r, c)} is outside the rooms")
+        slots[(r, c)] = "rack"
+        grid.set(r, c, CellType.OBSTACLE)
+    if params["dump"] is not None:
+        r0, c0, r1, c1 = params["dump"]
+        if not (0 <= r0 <= r1 < H and 0 <= c0 <= c1 < W) or c0 <= wc <= c1:
+            raise ValueError(f"dump region {params['dump']} is outside the rooms")
+        for r in range(r0, r1 + 1):
+            for c in range(c0, c1 + 1):
+                slots[(r, c)] = "dump"
+    for cell in obstacles:
+        if cell in slots:
+            raise ValueError(f"item {cell} sits on a slot")
+    keep_out = set(obstacles) | set(slots)
+    west_cols, east_cols = range(0, wc), range(wc + 1, W)
+    rooms = {"west": [p for p in _room_cells(grid, west_cols) if p not in keep_out],
+             "east": [p for p in _room_cells(grid, east_cols) if p not in keep_out]}
+    starts, tasks = _two_room_agents(cfg, grid, rooms, params["q_cross"], keep_out)
+    return Scenario(name=cfg.scenario, family="S", grid=grid, obstacles=obstacles, starts=starts, tasks=tasks,
+                    meta={"rooms": {"west_cols": west_cols, "east_cols": east_cols}, "params": params,
+                          "seed": cfg.seed}, slots=slots)
 
 
 def _complements(cfg: SimConfig, params: Dict[str, Any]) -> Scenario:
@@ -460,6 +523,8 @@ def build_scenario(cfg: SimConfig) -> Scenario:
     params = _resolve_params(cfg)
     if cfg.scenario in _TWO_ROOM:
         return _two_room(cfg, params)
+    if cfg.scenario in _CARRY_SCENES:
+        return _carry_scene(cfg, params)
     if cfg.scenario == "complements":
         return _complements(cfg, params)
     if cfg.scenario == "random_blocks":
