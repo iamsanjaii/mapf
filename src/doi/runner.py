@@ -14,7 +14,7 @@ from src.doi.network import Network
 from src.doi.policies import CentralPolicy, HindsightPolicy, PushPolicy, Shared, make_policy
 from src.doi.scenarios import Scenario, build_scenario
 from src.doi.rng import u01
-from src.doi.world import Move, Push, World
+from src.doi.world import Drop, Move, Pick, Push, World
 
 
 class Intake:
@@ -102,6 +102,7 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
     ticks, stalled, idle = 0, False, 0
     livelock_ticks = 20 * (scenario.grid.height + scenario.grid.width)
     last_done, last_pushes, last_gain = 0, 0, 0
+    gain_carry_cost = 0.0
     waits_at_progress = {i: 0 for i in world.counters}
     gain_tick, gain_counters, gain_push_cost = -1, {i: dict(c) for i, c in world.counters.items()}, 0.0
     for t in range(cfg.horizon or cfg.max_ticks):
@@ -128,7 +129,7 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
         for a in active:
             res = results[a.id]
             a.after_action(res, t)
-            if res.ok and isinstance(actions[a.id], (Move, Push)):
+            if res.ok and isinstance(actions[a.id], (Move, Push, Pick, Drop)):
                 progress = True
             if a.finished:
                 progress = True
@@ -148,8 +149,10 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
             world.tick_cost[-idle:] = [0.0] * idle
             break
         done_now = sum(a.task_idx for a in agents)
-        if done_now != last_done or world.removals != last_pushes:        # robots wandering is not progress
-            last_done, last_pushes, last_gain = done_now, world.removals, t
+        lifts = world.removals + sum(c["picks"] + c["drops"] for c in world.counters.values())
+        if done_now != last_done or lifts != last_pushes:        # robots wandering is not progress
+            last_done, last_pushes, last_gain = done_now, lifts, t
+            gain_carry_cost = world.carry_cost
             gain_tick, gain_counters, gain_push_cost = t, {i: dict(c) for i, c in world.counters.items()}, world.push_cost
         elif t - last_gain >= livelock_ticks:
             stalled = True
@@ -157,6 +160,7 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
             for i, c in gain_counters.items():
                 world.counters[i].update(c)
             world.push_cost = gain_push_cost
+            world.carry_cost = gain_carry_cost
             world.tick_cost[gain_tick + 1:] = [0.0] * (len(world.tick_cost) - gain_tick - 1)
             break
     result = build_result(cfg, policy, world, network, agents, shared, ticks, stalled,
@@ -170,7 +174,11 @@ def build_result(cfg, policy, world, network, agents, shared, ticks, stalled, ru
     waits = sum(c["waits"] for c in world.counters.values())
     push_steps = sum(c["push_steps"] for c in world.counters.values())
     removals = world.removals
-    J = float((moves - push_steps) + waits + world.push_cost + cfg.fee * removals)
+    carry_steps = sum(c["carry_steps"] for c in world.counters.values())
+    picks = sum(c["picks"] for c in world.counters.values())
+    drops = sum(c["drops"] for c in world.counters.values())
+    J = float((moves - push_steps - carry_steps) + waits + world.push_cost + cfg.fee * removals
+              + world.carry_cost + cfg.pick_fee * picks + cfg.drop_fee * drops)
     U = cfg.unreachable_cost_for(scenario.grid.height, scenario.grid.width)
     unfinished = sum(len(a.tasks) - a.task_idx for a in agents)
     done = sum(a.task_idx for a in agents)
@@ -191,7 +199,10 @@ def build_result(cfg, policy, world, network, agents, shared, ticks, stalled, ru
         hindsight_buy=policy.hindsight_buy if isinstance(policy, HindsightPolicy) else 0.0,
         trajectory={i: list(p) for i, p in world.trajectory.items()},
         obstacle_trace=[dict(o) for o in world.obstacle_trace], tick_cost=list(world.tick_cost),
-        scenario=scenario)
+        scenario=scenario, picks=picks, drops=drops, carries=sum(1 for e in world.carry_log if e["mode"] == "carry"),
+        fills=world.fills, carry_steps=carry_steps, carry_cost=float(world.carry_cost),
+        slot_conflicts=sum(c["slot_conflicts"] for c in world.counters.values()),
+        carry_log=[dict(e) for e in world.carry_log])
 
 
 def run_arms(cfg: SimConfig, arms: Sequence[str]) -> Dict[str, RunResult]:

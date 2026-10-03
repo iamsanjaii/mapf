@@ -42,6 +42,14 @@ class RunResult:
     obstacle_trace: List[Dict[Pos, str]] = field(default_factory=list)   # obstacles after t ticks
     tick_cost: List[float] = field(default_factory=list)                 # fleet cost paid in each tick
     scenario: Any = None
+    picks: int = 0
+    drops: int = 0
+    carries: int = 0                 # obstacles taken to a rack or dump slot
+    fills: int = 0                   # pits filled
+    carry_steps: int = 0
+    carry_cost: float = 0.0          # loaded steps, at kappa_c * weight each
+    slot_conflicts: int = 0          # drops refused because the slot was full or the pit already filled
+    carry_log: List[dict] = field(default_factory=list)
 
 
 def _unreachable(result: RunResult) -> float:

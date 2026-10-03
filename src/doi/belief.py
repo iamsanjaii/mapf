@@ -26,6 +26,7 @@ class BeliefState:
         self.cls = MaxRegisterMap(0)
         self.kind = MaxRegisterMap(-1)
         self.obstructions = ObstructionSet()
+        self.slots_full = GSet()            # slots known to hold an obstacle; a slot is never emptied
         for cell, kind in initial_obstacles.items():       # obstacles on the map at tick 0 are known to everyone
             self.blocked_tick.raise_to(cell, 0)
             self.cls.raise_to(cell, CLASS_CODE["robot_clearable"])
@@ -39,7 +40,7 @@ class BeliefState:
         return self.clock.n
 
     _COMPONENTS = ("records", "agg", "census", "report_tick", "blocked_tick", "free_tick", "cls", "kind",
-                   "obstructions")
+                   "obstructions", "slots_full")
 
     def add_record(self, rec: RentRecord) -> None:
         self.records.add(rec)

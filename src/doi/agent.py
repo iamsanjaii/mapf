@@ -3,7 +3,10 @@ from dataclasses import dataclass
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
 from src.doi.belief import CLASS_CODE, BeliefState
+from src.doi.carrier import Carrier
+from src.doi.carryplan import CarryPlan, carry_plans
 from src.doi.config import SimConfig
+from src.doi.kinds import KINDS, can_carry, can_fill, pushable, weight
 from src.doi.network import Message
 from src.doi.paths import bfs_dist_map, dream_path, passable_fn
 from src.doi.policies import PushPolicy, Shared, trigger
@@ -78,6 +81,11 @@ class RobotAgent:
         self._plan_goal: Optional[Pos] = None
         self._pushing = False
         self.pusher = Pusher(self)
+        self.carrier = Carrier(self)
+        self.slots: Dict[Pos, str] = dict(scenario.slots)       # racks and dump cells are part of the known map
+        self.load: Optional[str] = None                         # kind of the obstacle this robot is carrying
+        self._carrying = False
+        self._unload_key = None
         self._push_key = None
         self._last_action: Optional[Action] = None
         self._reserved_cache: Tuple[int, Set[Tuple[Pos, int]]] = (-1, set())
@@ -101,6 +109,8 @@ class RobotAgent:
         for c in sorted(obs.scanned - obs.blocked_cells):
             if b.status(c) in ("reported", "confirmed"):
                 b.observe_cell(c, False, t)
+        for c in sorted(obs.slots_full):
+            b.slots_full.add(c)
         self._prev_sensed = self.sensed_cells
         self.sensed_cells = obs.robot_cells
         if self._snapshot_view() != before:
@@ -303,21 +313,63 @@ class RobotAgent:
                 return Move(n)
         return Wait()
 
+    def unload_target(self, t: int) -> Optional[Tuple[str, Pos, Pos]]:
+        """Cheapest place to put the carried obstacle from here: (mode, target, access cell), or None."""
+        if self.load is None:
+            return None
+        b, engine = self.belief, self.shared.engine
+        blocked = b.believed_blocked()
+        free = passable_fn(self.grid, closed=blocked)
+        targets = [(c, "carry") for c, s in sorted(self.slots.items())
+                   if s in KINDS[self.load].slots and c not in b.slots_full]
+        if can_fill(self.load):
+            targets += [(c, "fill") for c in sorted(blocked) if b.kind_of(c) == "pit"]
+        best = None
+        for target, mode in targets:
+            after = blocked - {target} if mode == "fill" else blocked
+            for dr, dc in ((-1, 0), (1, 0), (0, 1), (0, -1)):
+                access = (target[0] + dr, target[1] + dc)
+                if not free(access):
+                    continue
+                haul = engine.distance(self.pos, access, blocked)
+                if haul >= self.U:
+                    continue
+                cost = (haul * self.cfg.kappa_c * weight(self.load) + self.cfg.drop_fee
+                        + engine.distance(access, self.goal, after))
+                key = (cost, target, access)
+                if best is None or key < best[0]:
+                    best = (key, (mode, target, access))
+        return best[1] if best else None
+
     def decide(self, t: int) -> Action:
         action: Optional[Action] = None
-        if self.pusher.active():
+        if self.carrier.active():
+            action = self.carrier.step(t)
+        elif self.pusher.active():
             action = self.pusher.step(t)
         if action is None:
             if self._planned_task != self.task_idx:
                 self._begin_task(t)
-            if not self.pusher.active():
+            if not (self.pusher.active() or self.carrier.active()):
                 plan = self._consider_push(t)
-                if plan is not None:
+                if isinstance(plan, CarryPlan):
+                    self.carrier.start(plan, t)
+                    action = self.carrier.step(t)
+                elif plan is not None:
                     # The robot carries out the first leg only. After it, the ordinary rule re-decides the second
                     # obstacle, and its evidence is then the full complement saving.
                     self.pusher.start(plan.first if isinstance(plan, BundlePlan) else plan, t)
                     action = self.pusher.step(t)
+            if action is None and self.load is not None and not self.carrier.active():
+                key = (self.belief.version, self.pos)
+                if key != self._unload_key:               # loaded with no target: look again when the news changes
+                    self._unload_key = key
+                    target = self.unload_target(t)
+                    if target is not None:
+                        self.carrier.resume(self.load, *target, t)
+                        action = self.carrier.step(t)
         self._pushing = action is not None and self.pusher.active()
+        self._carrying = action is not None and self.carrier.active()
         if action is None:
             action = self.follow(self.goal, t)
         self._last_action = action
@@ -325,7 +377,7 @@ class RobotAgent:
 
     def _consider_push(self, t: int):
         """The best push plan on this robot's own route, if the arm says push rather than go round."""
-        if not self.policy.pushes or self.pos == self.goal:
+        if not self.policy.pushes or self.pos == self.goal or self.load is not None:
             return None
         b = self.belief
         key = (b.version, self.pos, self.goal, tuple(sorted(c for c, u in self.deferred_until.items() if u > t)))
@@ -344,18 +396,27 @@ class RobotAgent:
             return None
         engine = self.shared.engine
         skip = frozenset(c for c, u in self.deferred_until.items() if u > t)
-        plans = candidate_plans(self.grid, engine.distance, blocked, eligible, b.kind_of, self.pos, self.goal,
+        pits = frozenset(c for c in eligible if b.kind_of(c) == "pit")
+        movable = [c for c in eligible if c not in pits and pushable(b.kind_of(c))]
+        plans = candidate_plans(self.grid, engine.distance, blocked, movable, b.kind_of, self.pos, self.goal,
                                 self.cfg.kappa, self.cfg.fee, self.cfg.push_max, self.U, skip)
+        carry_src = [c for c in movable if can_carry(b.kind_of(c) or "pallet")] if self.slots else []
+        fill_src = [c for c in sorted(blocked) if pits and c not in pits and b.status(c) == "confirmed"
+                    and b.cls.get(c) == CLASS_CODE["robot_clearable"] and can_fill(b.kind_of(c))]
+        if carry_src or fill_src:
+            plans = plans + carry_plans(self.grid, engine.distance, blocked, carry_src, fill_src, pits, b.kind_of,
+                                        self.pos, self.goal, self.cfg.kappa_c, self.cfg.pick_fee,
+                                        self.cfg.drop_fee, self.U, self.slots, b.slots_full.items(), skip)
         if not plans:
             return None
         if self.cfg.bundle_max == 2:
-            eligible_set = set(eligible)
+            eligible_set = set(movable)
             hard = b.hard_blocked()
 
             def eligible_after(p1):
                 bundle = dream_path(self.grid, tuple(sorted(p1.after - hard)), p1.end, self.goal, self.U, hard).bundle
                 return [c for c in bundle if c == p1.landing or c in eligible_set]
-            firsts = all_step_plans(self.grid, engine.distance, blocked, eligible, b.kind_of, self.pos, self.goal,
+            firsts = all_step_plans(self.grid, engine.distance, blocked, movable, b.kind_of, self.pos, self.goal,
                                     self.cfg.kappa, self.cfg.fee, self.cfg.push_max, self.U, skip)
             plans = plans + bundle_plans(self.grid, engine.distance, blocked, firsts, eligible_after, b.kind_of,
                                          self.goal, self.cfg.kappa, self.cfg.fee, self.cfg.push_max, self.U)
@@ -397,6 +458,8 @@ class RobotAgent:
         self._recent = (self._recent + [self.pos])[-EVADE_WINDOW:]
         if self._pushing:
             self.pusher.on_result(action, res, t)
+        if self._carrying:
+            self.carrier.on_result(action, res, t)
         if isinstance(action, Move):
             if res.ok:
                 self.plan = self.plan[1:] or [self.pos]
@@ -409,7 +472,7 @@ class RobotAgent:
         elif isinstance(action, Wait) and len(self.plan) > 1:
             self.plan = self.plan[1:]
         self.wait_streak = self.wait_streak + 1 if isinstance(action, Wait) else 0
-        if not self.pusher.active() and self.pos == self.goal:
+        if not (self.pusher.active() or self.carrier.active()) and self.pos == self.goal:
             self.task_idx += 1
             self.replan_needed = True
             if self.task_idx >= len(self.tasks):

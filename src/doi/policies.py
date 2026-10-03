@@ -162,7 +162,7 @@ class PredictedPolicy(LedgerPolicy):
         if predictions is None:
             predictions = agent.predictions = {}
         legs = (plan.first, plan.second) if isinstance(plan, BundlePlan) else (plan,)
-        key = tuple((p.obstacle, p.direction, p.steps) for p in legs)
+        key = tuple(p.key for p in legs)
         if key not in predictions:
             predictions[key] = self._forecast(agent, plan) >= price
         thr = self.lam if predictions[key] else 1.0 / self.lam
@@ -200,6 +200,8 @@ class CentralPolicy(LedgerPolicy):
                     changed = True
                 if c in world.plain:
                     belief.cls.raise_to(c, CLASS_CODE["robot_clearable"])
+            for c in sorted(world.slot_items):
+                belief.slots_full.add(c)
             for c in sorted(belief.believed_blocked() - set(world.obstacles)):
                 belief.observe_cell(c, False, t + 1)
                 changed = True
@@ -233,7 +235,7 @@ class HindsightPolicy(PushPolicy):
 def trigger(t: int, agent, plan: PushPlan, known: float, price: float) -> dict:
     return {"tick": t, "robot": agent.id, "cells": (plan.obstacle,), "kind": plan.kind, "landing": plan.landing,
             "steps": plan.steps, "known": float(known), "buy": float(price),
-            "bundle": isinstance(plan, BundlePlan)}
+            "bundle": isinstance(plan, BundlePlan), "mode": getattr(plan, "mode", "push")}
 
 
 def make_policy(cfg: SimConfig) -> PushPolicy:

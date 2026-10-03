@@ -46,6 +46,10 @@ class PushPlan:
     def total(self) -> float:
         return self.walk_in + self.push_cost + self.walk_on
 
+    @property
+    def key(self) -> tuple:
+        return (self.obstacle, self.direction, self.steps)
+
 
 def candidate_plans(grid: Grid, distance: Callable[[Pos, Pos, FrozenSet[Pos]], float], blocked: FrozenSet[Pos],
                     candidates: Iterable[Pos], kind_of: Callable[[Pos], Optional[str]], pos: Pos, goal: Pos,
