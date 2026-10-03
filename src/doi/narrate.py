@@ -26,6 +26,18 @@ SCENARIO_NOTES: Dict[str, Tuple[str, str]] = {
     "incidents_aisles": ("D", "A warehouse-shaped map: one-cell-wide shelf aisles and three cross aisles. An "
                               "obstruction in an aisle forces a detour. Reports are text like 'pallet down in "
                               "aisle 7 bay 3'."),
+    "warehouse_racks": ("S", "Two rooms split by a barrier; crates sit in its openings and racks stand along the "
+                             "aisles. A robot can push a crate aside, or lift it and put it on a rack, which "
+                             "clears it for good. Racks hold one crate each."),
+    "dump_central": ("S", "The same barrier with pallets, a crate and a shelf unit in it, and one dump region (a "
+                          "block of slots) in a far corner. Hauling to the dump is far, so the choice between "
+                          "pushing aside and carrying away is visible; only the dump takes the shelf unit."),
+    "site_pits": ("S", "A construction-site barrier: three of its openings are pits that block the way, and "
+                       "pieces of debris lie about. A robot can lift debris and drop it into a pit, which fills "
+                       "it for good and opens the path."),
+    "mixed": ("S", "Racks, a dump region and a pit together in one barrier: a crate, a shelf unit (dump only), a "
+                   "pallet and a pit, with debris to fill it. Each robot picks the cheapest of push, carry or "
+                   "fill for each obstacle."),
     "warehouse_blocks": ("S", "A benchmark warehouse map (MovingAI) with obstacles placed in one-cell corridors, "
                               "many robots, a fixed time horizon and throughput as the measure."),
     "warehouse_incidents": ("D", "The same benchmark maps with incidents appearing in corridors."),
@@ -80,13 +92,17 @@ FLAG_GUIDE: List[Tuple[str, List[Tuple[str, str, str]]]] = [
         ("--strips N / --strip-min A / --strip-max B", "Strips: number and length of the permanent wall strips.", ""),
         ("--pallets N / --crates N / --shelves N", "Strips: how many removable obstacles of each kind.",
          "A crate weighs 0.5, a pallet 1.0, a shelf unit 2.0."),
-        ("--map FILE", "ASCII map: # wall, . free, L pallet, C crate, S shelf unit.",
+        ("--map FILE", "ASCII map: # wall, . free, L pallet, C crate, S shelf unit, P pit, T rack, D dump slot.",
          "Robot starts and tasks are drawn from the seed."),
     ]),
     ("COSTS (what 'worth it' means)", [
         ("--kappa X", "A push step costs kappa times the obstacle's weight (default 4).",
          "Higher: pushing gets more expensive, so it takes more detour cost to justify."),
         ("--fee X", "Fixed cost per push run (default 1).", "Raise it to 50 or 200 and pushing stops being worth it."),
+        ("--kappa-c X", "A loaded step costs kappa-c times the carried kind's weight (default 2, at least 2).",
+         "Higher: hauling gets more expensive, so far racks and the dump zone lose to pushing."),
+        ("--pick-fee X / --drop-fee X", "Fixed cost of lifting an obstacle / of dropping it into a slot or pit "
+                                        "(default 1 each).", "Raise both and carrying stops being worth it."),
         ("--push-max N", "Longest straight push a robot will plan (default 6).", ""),
         ("--theta X", "Trigger multiplier (default 1).",
          "0 = Eager (push at any saving), 1 = ski rental, 2 = wait for twice the evidence."),
@@ -124,7 +140,11 @@ FLAG_GUIDE: List[Tuple[str, List[Tuple[str, str, str]]]] = [
 ]
 
 COLUMN_NOTES = [
-    ("J", "total cost = moves + waits + push steps x kappa x weight + pushes x fee (lower is better)"),
+    ("J", "total cost = moves + waits + push steps x kappa x weight + pushes x fee + loaded steps x kappa-c x "
+          "weight + picks x pick fee + drops x drop fee (lower is better)"),
+    ("carried / filled", "obstacles taken to a rack or the dump region / pits filled with debris"),
+    ("slot_conflicts", "drops refused because the slot was already full (or the pit already filled): the cost of "
+                       "not knowing what the others have done"),
     ("HR_av", "(J_arm - J_free) / (J_hindsight - J_free): how many times worse than hindsight, on the avoidable cost"),
     ("PoD", "J_arm / J_central: price of deciding from local, delayed information"),
     ("collateral", "detour paid because a pushed obstacle was left where it blocks a route (measured on the true map)"),
@@ -133,12 +153,30 @@ COLUMN_NOTES = [
 ]
 
 
+SLOT_LABEL = {"rack": "rack", "dump": "dump zone"}
+
+
 def events(result, scenario) -> List[Tuple[int, str]]:
     ev: List[Tuple[int, str]] = []
     for tr in result.triggers:
         rel = ">=" if tr["known"] >= tr["buy"] else "<  (the arm does not wait for the ledger)"
+        mode = tr.get("mode", "push")
+        if mode == "carry":
+            what = f"to carry the {tr['kind']} at {list(tr['cells'][0])} to {list(tr['landing'])}"
+        elif mode == "fill":
+            what = f"to fill the pit at {list(tr['landing'])} with the {tr['kind']} at {list(tr['cells'][0])}"
+        else:
+            what = f"to push the {tr['kind']} at {list(tr['cells'][0])} {tr['steps']} cell(s)"
         ev.append((tr["tick"], f"robot {tr['robot']} DECIDES: saving {tr['known']:.0f} {rel} price {tr['buy']:.0f} "
-                               f"to push the {tr['kind']} at {list(tr['cells'][0])} {tr['steps']} cell(s)"))
+                               f"{what}"))
+    for e in result.carry_log:
+        if e["mode"] == "fill":
+            ev.append((e["tick"], f"robot {e['robot']} FILLS the pit at {list(e['target'])} with {e['kind']} from "
+                                  f"{list(e['origin'])}"))
+        else:
+            label = SLOT_LABEL[scenario.slots[e["target"]]]
+            ev.append((e["tick"], f"robot {e['robot']} CARRIES the {e['kind']} from {list(e['origin'])} to the "
+                                  f"{label} at {list(e['target'])}"))
     for run in result.pushes:
         ev.append((run["start_tick"], f"robot {run['robot']} PUSHES the {run['kind']} from {list(run['origin'])} "
                                       f"to {list(run['landing'])} ({run['steps']} step(s), until tick "

@@ -4,7 +4,7 @@ from itertools import combinations
 from typing import Dict, FrozenSet, List, Tuple
 
 from src.doi.config import SimConfig
-from src.doi.kinds import weight
+from src.doi.kinds import KINDS, can_carry, can_fill, pushable, weight
 from src.doi.paths import bfs_dist_map, dream_path, passable_fn
 from src.doi.scenarios import Scenario
 
@@ -38,15 +38,32 @@ def _require_static(scenario: Scenario) -> None:
 
 
 def buy_lb(scenario: Scenario, cfg: SimConfig) -> Dict[Pos, float]:
-    """Lowest conceivable price of removing each obstacle: one push step, if any straight push is possible at all."""
+    """Lowest conceivable price of removing each obstacle.
+
+    A push costs at least one push step, and is possible at all only if a straight push has room. A carry costs at
+    least a pick-up and a drop (the haul may be zero steps), and needs a slot that takes the kind or, for debris, a
+    pit. A pit costs at least a pick-up and a drop, and needs some debris on the map to fill it with."""
     _require_static(scenario)
     grid = scenario.grid
     free = passable_fn(grid)
+    slot_types = set(scenario.slots.values())
+    kinds_present = list(scenario.obstacles.values())
+    has_pit = "pit" in kinds_present
+    has_debris = any(can_fill(k) for k in kinds_present)
+    lift = cfg.pick_fee + cfg.drop_fee
+    inf = float("inf")
     out: Dict[Pos, float] = {}
     for p, kind in sorted(scenario.obstacles.items()):
-        pushable = any(free((p[0] - dr, p[1] - dc)) and free((p[0] + dr, p[1] + dc))
-                       for dr, dc in [(-1, 0), (1, 0), (0, 1), (0, -1)])
-        out[p] = cfg.fee + cfg.kappa * weight(kind) if pushable else float("inf")
+        room = any(free((p[0] - dr, p[1] - dc)) and free((p[0] + dr, p[1] + dc))
+                   for dr, dc in [(-1, 0), (1, 0), (0, 1), (0, -1)])
+        push = cfg.fee + cfg.kappa * weight(kind) if pushable(kind) and room else inf
+        if kind == "pit":
+            carry = lift if has_debris else inf
+        elif can_carry(kind) and (slot_types & set(KINDS[kind].slots) or (has_pit and can_fill(kind))):
+            carry = lift
+        else:
+            carry = inf
+        out[p] = min(push, carry)
     return out
 
 

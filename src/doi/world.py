@@ -97,6 +97,7 @@ class World:
         self.carry_cost = 0.0                            # sum of kappa_c * weight over loaded steps
         self.fills = 0                                   # pits filled
         self.carry_log: List[dict] = []                  # one entry per completed drop
+        self.lift_ticks: List[Tuple[int, int]] = []      # (robot, tick) of every successful pick-up and drop
 
     def prefill(self, cells: Iterable[Pos]) -> None:
         """Remove obstacles at tick 0 (benchmark arms): the obstacle vanishes, it is not relocated."""
@@ -357,6 +358,7 @@ class World:
         self.load[i] = kind
         self._load_from[i] = to
         self.counters[i]["picks"] += 1
+        self.lift_ticks.append((i, t))
         return ""
 
     def _drop(self, i: int, to: Pos, t: int) -> str:
@@ -390,6 +392,7 @@ class World:
             return "no_target"
         self.load[i] = None
         self.counters[i]["drops"] += 1
+        self.lift_ticks.append((i, t))
         self.carry_log.append({"robot": i, "kind": kind, "origin": self._load_from.pop(i, None), "target": to,
                                "mode": mode, "tick": t})
         return ""

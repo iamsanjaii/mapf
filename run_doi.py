@@ -29,6 +29,7 @@ from src.doi.narrate import ARM_NOTES, COLUMN_NOTES, FLAG_GUIDE, SCENARIO_NOTES,
 from src.doi.runner import run_episode
 from src.doi.scenarios import DEFAULTS, build_scenario, scenario_from_ascii
 from src.doi.kinds import KINDS
+from src.doi.metrics import loaded_at, slots_full_at
 from src.doi.story import verdict
 from src.doi.builder import BuildError, build as build_layout, check
 from src.doi.wizard import COMMON_FIELDS, ask, ask_yes, configure
@@ -39,14 +40,17 @@ TOY_TASKS = [(1, 4), (1, 2), (1, 4), (1, 2)]
 SCATTER = dict(H=12, W=16, strips=0, pallets=21, crates=13, shelves=8)   # a cluttered open floor, obstacles anywhere
 ROBOT_GLYPHS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
-LEGEND = """Legend:  # permanent wall   L pallet   C crate   S shelf unit   (removable obstacles, pushed aside by robots)
-         0-9,a-z robots   . free cell"""
+LEGEND = """Legend:  # permanent wall   L pallet   C crate   S shelf unit   R debris   P pit   (removable obstacles)
+         T rack / D dump slot (t, d once holding an obstacle)   0-9,a-z robots, @ a robot carrying something
+         . free cell"""
 
 def build(args):
     if args.demo == "toy":
         scenario = scenario_from_ascii(TOY_ROWS, [(1, 2)], [TOY_TASKS], name="toy")
         cfg = SimConfig(n_robots=1, tasks_per_robot=len(TOY_TASKS), kappa=args.kappa, fee=args.fee,
-                        push_max=args.push_max, theta=args.theta, bundle_max=getattr(args, "bundle_max", 1), lam=getattr(args, "lam", 0.5),
+                        kappa_c=getattr(args, "kappa_c", 2.0), pick_fee=getattr(args, "pick_fee", 1.0),
+                        drop_fee=getattr(args, "drop_fee", 1.0), push_max=args.push_max, theta=args.theta,
+                        bundle_max=getattr(args, "bundle_max", 1), lam=getattr(args, "lam", 0.5),
                         debug_checks=True)
         return cfg, scenario
     params = {}
@@ -56,7 +60,8 @@ def build(args):
         params["p_report"] = args.p_report
     cfg = SimConfig(
         scenario=args.scenario, seed=args.seed, n_robots=args.robots, tasks_per_robot=args.tasks,
-        kappa=args.kappa, fee=args.fee, push_max=args.push_max, r_comm=args.r_comm, loss=args.loss,
+        kappa=args.kappa, fee=args.fee, kappa_c=getattr(args, "kappa_c", 2.0),
+        pick_fee=getattr(args, "pick_fee", 1.0), drop_fee=getattr(args, "drop_fee", 1.0), push_max=args.push_max, r_comm=args.r_comm, loss=args.loss,
         latency=args.latency, intake=args.intake, max_ticks=args.max_ticks,
         scenario_params=params, p_wrong_class=args.p_wrong_class, theta=args.theta,
         bundle_max=getattr(args, "bundle_max", 1), lam=getattr(args, "lam", 0.5))
@@ -72,12 +77,16 @@ def render(scenario, t, result, show_goals=False):
     g = scenario.grid
     cells = [["#" if g.get(r, c) == CellType.OBSTACLE else "." for c in range(g.width)] for r in range(g.height)]
     trace = result.obstacle_trace
+    full = slots_full_at(result, t)
+    for (r, c), slot in scenario.slots.items():
+        glyph = "T" if slot == "rack" else "D"
+        cells[r][c] = glyph.lower() if (r, c) in full else glyph
     for (r, c), kind in (trace[min(t, len(trace) - 1)] if trace else scenario.obstacles).items():
         cells[r][c] = KINDS[kind].glyph if kind in KINDS else "?"
     for i, traj in sorted(result.trajectory.items()):
         if t < len(traj):
             r, c = traj[t]
-            cells[r][c] = ROBOT_GLYPHS[i % len(ROBOT_GLYPHS)]
+            cells[r][c] = "@" if loaded_at(result, i, t) else ROBOT_GLYPHS[i % len(ROBOT_GLYPHS)]
     return "\n".join("  " + " ".join(row) for row in cells)
 
 
@@ -128,11 +137,12 @@ HINDSIGHT_NOTE = ("hindsight is a relaxed lower reference (obstacles vanish, no 
 
 def print_summary(policies, runs):
     """The default terminal output: one table of cost and pushes, and one sentence on who won."""
-    print(f"\n{'arm':10s} {'cost':>8s} {'pushes':>7s}")
+    print(f"\n{'arm':10s} {'cost':>8s} {'pushes':>7s} {'carried':>8s} {'filled':>7s}")
     for name in policies:
         r = runs[name]
         cost = r.J_censored + r.hindsight_buy if name == "hindsight" else r.J_censored
-        print(f"{name:10s} {cost:8.0f} {r.removals:7d}" + ("   (stalled)" if r.stalled else ""))
+        print(f"{name:10s} {cost:8.0f} {r.removals:7d} {r.carries:8d} {r.fills:7d}"
+              + ("   (stalled)" if r.stalled else ""))
     if "hindsight" in policies:
         print(HINDSIGHT_NOTE)
     print("\n" + verdict({n: runs[n] for n in policies}))
@@ -144,7 +154,8 @@ def print_comparison(names, runs):
     print("COMPARISON (same scenario, same tasks, same traffic layer for every arm)")
     print("=" * 78)
     have_bench = "free" in runs and "hindsight" in runs
-    header = f"{'arm':10s} {'J':>8s} {'pushes':>6s} {'waits':>6s} {'collat':>7s} {'reject':>6s} {'stalled':>7s}"
+    header = (f"{'arm':10s} {'J':>8s} {'pushes':>6s} {'carried':>7s} {'filled':>6s} {'waits':>6s} {'collat':>7s} "
+              f"{'reject':>6s} {'stalled':>7s}")
     if have_bench:
         header += f" {'HR_av':>7s}"
     if "central" in runs:
@@ -153,7 +164,7 @@ def print_comparison(names, runs):
     for name in names:
         r = runs[name]
         cost = r.J_censored + r.hindsight_buy if name == "hindsight" else r.J_censored
-        line = (f"{name:10s} {cost:8.0f} {r.removals:6d} {r.waits:6d} "
+        line = (f"{name:10s} {cost:8.0f} {r.removals:6d} {r.carries:7d} {r.fills:6d} {r.waits:6d} "
                 f"{collateral_cost(r, r.scenario, SimConfig(**r.cfg)):7.0f} {r.push_rejected:6d} {str(r.stalled):>7s}")
         if have_bench:
             if name in ("free", "hindsight"):
@@ -177,9 +188,11 @@ def print_comparison(names, runs):
 
 
 def summarise(result):
-    return (f"J = {result.J:.0f}  (moves {result.moves - result.push_steps} + waits {result.waits} + "
-            f"push steps {result.push_steps} at {result.push_cost:.0f} + {result.removals} push run(s) x fee)   "
-            f"ticks = {result.ticks}   unfinished tasks = {result.unfinished_tasks}")
+    carry = (f" + loaded steps {result.carry_steps} at {result.carry_cost:.0f} + {result.picks} pick(s) and "
+             f"{result.drops} drop(s) x fee") if result.picks else ""
+    return (f"J = {result.J:.0f}  (moves {result.moves - result.push_steps - result.carry_steps} + waits "
+            f"{result.waits} + push steps {result.push_steps} at {result.push_cost:.0f} + {result.removals} push "
+            f"run(s) x fee{carry})   ticks = {result.ticks}   unfinished tasks = {result.unfinished_tasks}")
 
 
 PLAY_ARMS = ["never", "myopic", "eager", "rof", "central"]
@@ -275,6 +288,10 @@ def main(argv=None):
     ap.add_argument("--kappa", type=float, default=None,
                     help="a push step costs kappa x the obstacle's weight (default 4; 1 in --demo scatter)")
     ap.add_argument("--fee", type=float, default=1.0, help="cost per push run")
+    ap.add_argument("--kappa-c", type=float, default=2.0,
+                    help="a loaded step costs kappa-c x the carried kind's weight (default 2, at least 2)")
+    ap.add_argument("--pick-fee", type=float, default=1.0, help="cost of lifting an obstacle")
+    ap.add_argument("--drop-fee", type=float, default=1.0, help="cost of dropping it into a slot or pit")
     ap.add_argument("--push-max", type=int, default=6, help="longest straight push a robot will plan")
     ap.add_argument("--r-comm", type=float, default=8.0, help="ledger radius (0 = no sharing, inf = global)")
     ap.add_argument("--loss", type=float, default=0.0, help="ledger message loss probability")
@@ -397,8 +414,9 @@ def main(argv=None):
         print_comparison(names, runs)
     elif sim_only and len(policies) == 1:
         r = runs[policies[0]]
-        print(f"result: total cost {r.J_censored:.0f}, {r.removals} push run{'s' if r.removals != 1 else ''}, "
-              f"{r.ticks} ticks" + (", STALLED" if r.stalled else ""))
+        lifted = f", {r.carries} carried, {r.fills} filled" if r.drops else ""
+        print(f"result: total cost {r.J_censored:.0f}, {r.removals} push run{'s' if r.removals != 1 else ''}"
+              f"{lifted}, {r.ticks} ticks" + (", STALLED" if r.stalled else ""))
     else:
         print_summary(policies, runs)
 

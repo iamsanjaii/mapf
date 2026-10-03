@@ -11,7 +11,7 @@ import run_doi
 def test_list_and_toy_demo_reproduce_hand_checked_numbers(capsys):
     assert run_doi.main(["--list"]) == 0
     out = capsys.readouterr().out
-    assert "rof" in out and "single_block" in out and "pit" not in out.lower()
+    assert "rof" in out and "single_block" in out and "site_pits" in out        # pits came back in stage 2
     assert run_doi.main(["--demo", "toy", "--no-show"]) == 0
     out = capsys.readouterr().out
     rows = {w[0]: w[1:] for w in (line.split() for line in out.splitlines()) if len(w) >= 3 and w[1].isdigit()}

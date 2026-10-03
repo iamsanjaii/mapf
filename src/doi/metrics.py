@@ -50,6 +50,7 @@ class RunResult:
     carry_cost: float = 0.0          # loaded steps, at kappa_c * weight each
     slot_conflicts: int = 0          # drops refused because the slot was full or the pit already filled
     carry_log: List[dict] = field(default_factory=list)
+    lift_ticks: List[Tuple[int, int]] = field(default_factory=list)      # (robot, tick) of every pick-up and drop
 
 
 def _unreachable(result: RunResult) -> float:
@@ -107,6 +108,34 @@ def collateral_cost(result: RunResult, scenario, cfg: SimConfig) -> float:
     return float(total)
 
 
+def loaded_at(result: RunResult, robot: int, t: int) -> bool:
+    """Is the robot carrying something at trajectory index t (the state after t ticks)? Lifts alternate pick, drop."""
+    return sum(1 for r, tick in result.lift_ticks if r == robot and tick < t) % 2 == 1
+
+
+def slots_full_at(result: RunResult, t: int) -> FrozenSet[Pos]:
+    """Rack and dump cells holding an obstacle after t ticks."""
+    return frozenset(e["target"] for e in result.carry_log if e["mode"] == "carry" and e["tick"] < t)
+
+
+def near_slot_waits(result: RunResult, radius: int = 2) -> int:
+    """Ticks a robot stood still within `radius` cells of a slot, not counting the ticks it spent lifting or dropping.
+
+    A rough measure of queueing at the racks and the dump region."""
+    slots = list(result.scenario.slots) if result.scenario is not None else []
+    if not slots:
+        return 0
+    lifting = set(result.lift_ticks)
+    total = 0
+    for robot, path in result.trajectory.items():
+        for t in range(len(path) - 1):
+            if path[t] != path[t + 1] or (robot, t) in lifting:
+                continue
+            if min(abs(path[t][0] - r) + abs(path[t][1] - c) for r, c in slots) <= radius:
+                total += 1
+    return total
+
+
 def hindsight_ratios(alg: RunResult, hindsight: RunResult, free: RunResult) -> Dict[str, float]:
     assert hindsight.policy == "hindsight" and free.policy == "free"
     j_hind = hindsight.J_censored + hindsight.hindsight_buy
@@ -143,6 +172,11 @@ def summary_row(result: RunResult, ratios: Optional[Dict[str, float]] = None,
         "J": result.J, "J_censored": result.J_censored, "delay": result.delay,
         "throughput": result.throughput, "removals": result.removals, "push_steps": result.push_steps,
         "push_rejected": result.push_rejected, "stalled": result.stalled,
+        "carries": result.carries, "fills": result.fills, "picks": result.picks, "drops": result.drops,
+        "carry_steps": result.carry_steps, "carry_cost": result.carry_cost, "slot_conflicts": result.slot_conflicts,
+        "slot_utilisation": (sum(1 for e in result.carry_log if e["mode"] == "carry") / len(scenario.slots)
+                             if scenario is not None and scenario.slots else 0.0),
+        "near_slot_waits": near_slot_waits(result) if full else nan,
         "unfinished_tasks": result.unfinished_tasks, "ticks": result.ticks,
         "broadcasts": result.messages["broadcasts"], "transmissions": result.messages["transmissions"],
         "dropped": result.messages["dropped"], "message_units": result.messages["units"],

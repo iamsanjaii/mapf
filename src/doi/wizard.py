@@ -149,7 +149,9 @@ def configure(args, explicit: Set[str], preview: Callable, yes: bool = False, in
             common_done = True
         cfg = SimConfig(seed=args.seed, n_robots=args.robots, tasks_per_robot=args.tasks, kappa=args.kappa,
                         fee=args.fee, push_max=args.push_max, r_comm=args.r_comm, loss=args.loss,
-                        latency=args.latency, bundle_max=args.bundle_max, lam=args.lam)
+                        latency=args.latency, bundle_max=args.bundle_max, lam=args.lam,
+                        kappa_c=getattr(args, "kappa_c", 2.0), pick_fee=getattr(args, "pick_fee", 1.0),
+                        drop_fee=getattr(args, "drop_fee", 1.0))
         answers = {k: getattr(args, k, None) for k in ("rows", "cols", "wall_col", "blocks", "doors", "kind",
                                                        "crossing", "strips", "strip_min", "strip_max", "pallets",
                                                        "crates", "shelves", "map")}

@@ -202,7 +202,7 @@ def build_result(cfg, policy, world, network, agents, shared, ticks, stalled, ru
         scenario=scenario, picks=picks, drops=drops, carries=sum(1 for e in world.carry_log if e["mode"] == "carry"),
         fills=world.fills, carry_steps=carry_steps, carry_cost=float(world.carry_cost),
         slot_conflicts=sum(c["slot_conflicts"] for c in world.counters.values()),
-        carry_log=[dict(e) for e in world.carry_log])
+        carry_log=[dict(e) for e in world.carry_log], lift_ticks=list(world.lift_ticks))
 
 
 def run_arms(cfg: SimConfig, arms: Sequence[str]) -> Dict[str, RunResult]:
