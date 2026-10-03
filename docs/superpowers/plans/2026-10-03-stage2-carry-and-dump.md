@@ -1,7 +1,8 @@
 # Stage 2 plan: carry obstacles to a dump zone, rack or pit
 
-Status: plan only, written 2026-10-03 from the professor's brief on obstacles. Nothing here is built.
-Stage 1 (push model, `2026-10-02-push-obstacles-design.md`) stays unchanged until this stage starts.
+Status: built 2026-10-03 (all six build-order steps; 397 tests pass, 52 legacy + 345 in `tests/doi`). Written from the
+professor's brief on obstacles. The design below is the original plan; where the build differs, the section
+"Implementation notes" at the end is the record. Stage 1 behaviour is unchanged when a map has no slots or pits.
 
 Naming note: `2026-10-02-stage2-twin-outline.md` also says "Stage 2" (digital twin). That one is a separate
 track and does not depend on this one; in the push-model numbering used here it comes after Stage 3.
@@ -49,9 +50,8 @@ free slot or, failing that, keeps carrying (it is charged per tick as usual).
 Evidence `E` and the arm rules (`rof`, `central`, `myopic`, ...) are unchanged; only the price set grows.
 For each obstacle the robot picks the cheapest of push, carry and fill, then applies the arm's rule.
 
-**Belief.** One more tick-stamped register for slot occupancy (set when seen full or dropped into, cleared when
-seen empty), merged by max like the others. Pits use a grow-only "filled" set instead, since a filled pit never
-reverts (merge by union, so robots converge in any order). Robots can disagree about a slot: two may head for the same one.
+**Belief.** One more component for slot occupancy (see implementation note 2: a grow-only set). A filled pit
+never reverts (see note 1). Robots can disagree about a slot: two may head for the same one.
 That is accepted in the first version (the second robot finds it full and re-plans, which is a measured cost),
 because a claim lock is a Stage 3 item.
 
@@ -86,7 +86,7 @@ pit simulator at commit `29fdf45` is a reference for the pit cell only.
 ## Tests (hand-checked)
 
 - A crate one step from a rack: carry costs `pick_fee + kappa_c*w + drop_fee`, matching a manual count.
-- A full slot is not chosen; seeing it freed makes it choosable again.
+- A full slot is not chosen.
 - A pit filled by debris turns to floor and stays floor, and the route through it is open for every robot that
   learns of it (gossip merge of the filled set is a union).
 - A dump region of `n` slots accepts exactly `n` obstacles; the `n+1`-th robot finds it full and re-plans.
@@ -108,3 +108,47 @@ Settled (2026-10-03):
    `site_pits` and `mixed` scenarios and the pit tests above all ship in this stage.
 
 Still open: none.
+
+## Implementation notes (built 2026-10-03)
+
+Where the build departs from the design above, and what it found.
+
+**Departures from the design**
+
+1. **A pit is an obstacle of kind `pit`, not a new cell type.** It is unpushable and uncarriable. Filling it deletes
+   the obstacle, so every existing mechanism (belief registers, rent, evidence, gossip) handles it unchanged. Permanence
+   needed no "filled" set: the world never recreates a pit, and the belief's blocked/free tick registers merge by max,
+   so a robot that saw the fill beats any stale gossip (pinned by `test_a_filled_pit_stays_filled_when_a_stale_belief_gossips_it`).
+2. **Slot occupancy is a grow-only set** (`BeliefState.slots_full`), not a tick register, because a slot is never
+   emptied. So "seeing a slot freed makes it choosable again" does not arise and has no test.
+3. **Rack cells are fixtures (not walkable); dump cells are walkable floor.** A stored item is not an obstacle, so it
+   never blocks a route, and a dump region cannot seal itself off as it fills. Pick and drop act on an *adjacent*
+   cell, as push does.
+4. **`kappa_c` must be at least 2** (validated), so that a loaded step never costs less than an empty one: the lightest
+   carriable kind weighs 0.5. Defaults: `kappa_c` 2, `pick_fee` 1, `drop_fee` 1.
+5. **Fill sources are any debris on the map**, not only debris on the robot's route: the pit is on the route, the
+   debris is the means. Carry sources are on the route, as push candidates are. The decision's subject for meters and
+   captions is the pit for a fill, the obstacle for a carry.
+6. **New modules instead of renaming `pushplan.py`:** `carryplan.py` (plans), `carrier.py` (state machine, like
+   `pusher.py`). The existing push planner is untouched except for a `key` property.
+7. **A loaded robot never abandons its load.** If its target turns out full it retargets to the cheapest free slot or
+   pit; if none exists it carries on with its task loaded and looks again whenever its belief changes.
+8. **Builder:** a fourth layout `site` (`--layout site --pits --debris --racks --dump-rows --dump-cols`) replaces the
+   planned `--slots/--slot-layout` flags. Map files accept `P`, `T`, `D`.
+9. **Hindsight lower bound** (`oracle.buy_lb`) is now the cheaper of the push bound and the carry bound (pick plus
+   drop fee, if some slot or pit can take the kind), and a pit is priced as a pick plus a drop if any debris exists.
+
+**What it found (quick runs, direction only)**
+
+* On all four scenarios every arm finishes and `J == sum(tick_cost)`: 864 runs (4 scenarios x 6 seeds x 2 fleet sizes x
+  2 radii x 9 arms) and 250 more with one rack, one dump cell, or fewer debris than pits, with no stalls or crashes.
+* At default costs pushing beats hauling on `dump_central`: `rof` carries nothing and pushes. Carrying starts to win
+  when pushing gets dear (`doi_s2_modes.py`: at kappa 16 a near dump gets 2 carries and no pushes, a far dump 1 carry and
+  2 pushes) and as racks are added (Spearman of racks against carries 0.89).
+* `free` is not a lower bound on `J` once robots crowd a doorway: on `site_pits` (8 robots, seed 2) `free` cost 1244
+  against 1209 for `central`, because opening every obstacle at tick 0 sends everyone through the same gap.
+* Two robots after one slot: the second finds it full (or sees it full on approach) and carries its load on to its
+  goal; the cost shows up as `slot_conflicts` or as a wasted pick-up.
+
+**Not done**: a claim lock on slots (Stage 3), loaded-robot slowdown (decided out of scope), a full-size run of S2
+(only `--quick` was run).
