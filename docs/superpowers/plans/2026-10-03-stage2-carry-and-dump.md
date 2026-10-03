@@ -150,5 +150,19 @@ Where the build departs from the design above, and what it found.
 * Two robots after one slot: the second finds it full (or sees it full on approach) and carries its load on to its
   goal; the cost shows up as `slot_conflicts` or as a wasted pick-up.
 
-**Not done**: a claim lock on slots (Stage 3), loaded-robot slowdown (decided out of scope), a full-size run of S2
-(only `--quick` was run).
+**Full S2 run (30 seeds, 12 robots x 12 tasks, `--jobs 8`, 3 minutes, no run stalled; results in the git-ignored
+`experiments/results/doi/s2_modes`)**
+
+* `rof` beats `never` in every seed at every rack count, by a median of 676 to 718 on a cost of about 2,900 (min 442).
+* Racks change the mix, not the total. Median `rof` cost is 2,225 with no rack and 2,235 with eight, while pushes fall
+  from 7 to 1 and carries rise from 0 to 4 (Spearman of racks against carries 0.94). At default costs a crate
+  pushed aside costs about what a crate carried away does, and a parked crate rarely blocks anyone, so a rack buys
+  no saving here. The case for carrying is collateral, which this map barely has.
+* `rof` and `central` are within 0.1% (PoD 0.999 to 1.000) and median `slot_conflicts` is 0 with full sharing.
+* Haul distance and push cost (`dump_central`): with a near dump, median carries rise 1, 2, 3, 3 as kappa goes
+  4, 8, 16, 32 and pushes fall 5, 2, 0, 0. With a far dump the same sweep gives carries 0, 0, 1, 3 and pushes
+  7, 5, 2, 0. Carrying costs more than pushing at every kappa with the far dump (median J 2,431 against 2,312 near,
+  at kappa 32), which is the price of the haul.
+
+**Not done**: a claim lock on slots (Stage 3), loaded-robot slowdown (decided out of scope), and a scenario where
+parked obstacles would otherwise cause collateral (needed to show carrying paying for itself).
