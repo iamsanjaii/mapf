@@ -80,9 +80,15 @@ FLAG_GUIDE: List[Tuple[str, List[Tuple[str, str, str]]]] = [
     ("BUILD YOUR OWN MAP (asks in the terminal for anything not given; --yes accepts defaults)", [
         ("--build", "Start the interactive set-up: layout, map, fleet, costs, arms, then a map preview.",
          "Prints the equivalent one-line command at the end so the run can be repeated exactly."),
-        ("--layout barrier|strips|map", "barrier: two zones split by a barrier with removable obstacles in it. "
-                                        "strips: random wall strips plus obstacles anywhere. map: your own ASCII "
-                                        "file.", ""),
+        ("--layout barrier|strips|site|map", "barrier: two zones split by a barrier with removable obstacles in "
+                                             "it. strips: random wall strips plus obstacles anywhere. site: a "
+                                             "barrier with pits, debris, racks and a dump region. map: your own "
+                                             "ASCII file.", ""),
+        ("--pits N / --debris N", "Site: pits in the barrier (need at least as many pieces of debris).",
+         "Filling a pit with debris opens the way for good."),
+        ("--racks N / --dump-rows R --dump-cols C", "Site: racks along the aisles (one obstacle each) and the size "
+                                                    "of the dump region (a block of one-obstacle slots).",
+         "Slots are what carrying needs: a full slot takes nothing more."),
         ("--rows / --cols", "Grid size.", ""),
         ("--blocks N / --doors N / --wall-col C", "Barrier: removable obstacles in it, door rows at the bottom, "
                                                   "its column.", "Fewer doors or more crossing trips make a push "

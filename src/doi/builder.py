@@ -1,20 +1,21 @@
 """Build a scenario from user-chosen sizes, counts and densities, and check it before it is run.
 
-Three layouts: `barrier` (two zones split by a barrier with removable obstacles in its openings), `strips`
-(random continuous wall strips plus removable obstacles anywhere) and `map` (an ASCII file). Every problem is
-reported as a BuildError with a plain-language message.
+Four layouts: `barrier` (two zones split by a barrier with removable obstacles in its openings), `strips`
+(random continuous wall strips plus removable obstacles anywhere), `site` (a barrier whose openings hold obstacles
+and pits, with debris on the floor, racks along the aisles and a dump region) and `map` (an ASCII file). Every
+problem is reported as a BuildError with a plain-language message.
 """
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.doi.config import SimConfig
-from src.doi.kinds import GLYPHS, KINDS
+from src.doi.kinds import GLYPHS, KINDS, SLOT_GLYPHS, can_carry, can_fill, pushable
 from src.doi.paths import dream_path, passable_fn
 from src.doi.rng import stream
 from src.doi.scenarios import Scenario, _component_labels, build_scenario, scenario_from_ascii
 from src.environment.grid import CellType
 
 Pos = Tuple[int, int]
-LAYOUTS = ("barrier", "strips", "map")
+LAYOUTS = ("barrier", "strips", "site", "map")
 
 
 class BuildError(ValueError):
@@ -67,6 +68,52 @@ def strips_params(rows: int, cols: int, strips: int, strip_len: Tuple[int, int],
                 pallets=pallets, crates=crates, shelves=shelves)
 
 
+def site_params(a: Dict[str, Any], seed: int) -> Dict[str, Any]:
+    """Parameters of the generic two-room scene (see scenarios._carry_scene) from the `site` answers."""
+    rows, cols, doors = a["rows"], a["cols"], a["doors"]
+    blocks, pits, debris, racks = a["blocks"], a["pits"], a["debris"], a["racks"]
+    dr, dc = a["dump_rows"], a["dump_cols"]
+    if min(blocks, pits, debris, racks, dr, dc) < 0:
+        raise BuildError("counts cannot be negative")
+    if blocks + pits < 1:
+        raise BuildError("at least 1 removable obstacle or pit is needed: the point is deciding what to clear")
+    if pits and debris < pits:
+        raise BuildError(f"{pits} pit(s) need at least {pits} piece(s) of debris to fill them, but only {debris} "
+                         f"given: add debris or use fewer pits")
+    if (dr == 0) != (dc == 0):
+        raise BuildError("a dump region needs both dump rows and dump columns (or neither)")
+    base = barrier_params(rows, cols, a.get("wall_col"), 1, doors, "pallet", a["crossing"])
+    wc = base["wall_col"]
+    kind = a["kind"]
+    if kind != "mixed" and kind not in KINDS:
+        raise BuildError(f"unknown obstacle kind {kind!r}: choose from mixed, {', '.join(KINDS)}")
+    kinds = ("pallet", "crate", "shelf_unit") if kind == "mixed" else (kind,)
+    open_rows = barrier_block_rows(rows, doors, blocks + pits)
+    order = [kinds[i % len(kinds)] for i in range(blocks)] + ["pit"] * pits
+    stream(seed, "site-order").shuffle(order)
+    items = [(r, wc, k) for r, k in zip(open_rows, order)]
+    rack_cells = []
+    for k in range(racks):
+        row, col = 1 + 2 * (k // 2), (wc - 4 if k % 2 == 0 else wc + 4)
+        if row > rows - doors - 2 or not 0 < col < cols - 1:
+            raise BuildError(f"no room for {racks} racks: this map holds {k}; use a bigger map or fewer racks")
+        rack_cells.append((row, col))
+    dump = None
+    cells = set(rack_cells)
+    if dr:
+        dump = (rows - dr, 0, rows - 1, dc - 1)
+        if dr >= rows or dc - 1 >= wc or any(dump[0] <= r <= dump[2] and dump[1] <= c <= dump[3] for r, c in cells):
+            raise BuildError(f"the dump region of {dr} x {dc} does not fit in the west room, or covers a rack: "
+                             f"make it smaller or move the racks")
+        cells |= {(r, c) for r in range(dump[0], dump[2] + 1) for c in range(dump[1], dump[3] + 1)}
+    pool = sorted((r, c) for r in range(rows) for c in range(cols) if c != wc and (r, c) not in cells)
+    if debris > len(pool):
+        raise BuildError(f"{debris} pieces of debris do not fit on the floor")
+    items += [(r, c, "debris") for r, c in sorted(stream(seed, "site-debris").sample(pool, debris))]
+    return dict(H=rows, W=cols, wall_col=wc, door_rows=base["door_rows"], q_cross=a["crossing"], items=tuple(items),
+                racks=tuple(rack_cells), dump=dump)
+
+
 def scenario_from_map_file(path: str, cfg: SimConfig) -> Scenario:
     """An ASCII map (# wall, . free, and kind glyphs such as L C S); robot starts and tasks are drawn from the seed."""
     try:
@@ -78,10 +125,11 @@ def scenario_from_map_file(path: str, cfg: SimConfig) -> Scenario:
         raise BuildError(f"map file {path!r} is empty")
     if len({len(r) for r in rows}) != 1:
         raise BuildError("every row of the map file must have the same length")
-    bad = sorted({ch for r in rows for ch in r} - set("#.") - set(GLYPHS))
+    bad = sorted({ch for r in rows for ch in r} - set("#.") - set(GLYPHS) - set(SLOT_GLYPHS))
     if bad:
         raise BuildError(f"map file has unknown characters {bad}: use # wall, . free, "
-                         + ", ".join(f"{g} {GLYPHS[g]}" for g in GLYPHS))
+                         + ", ".join(f"{g} {GLYPHS[g]}" for g in GLYPHS) + ", "
+                         + ", ".join(f"{g} {SLOT_GLYPHS[g]} slot" for g in SLOT_GLYPHS))
     probe = scenario_from_ascii(rows, [], [], name="map")
     if not probe.obstacles:
         raise BuildError("the map needs at least one removable obstacle (for example L for a pallet)")
@@ -90,7 +138,7 @@ def scenario_from_map_file(path: str, cfg: SimConfig) -> Scenario:
     for comp in label.values():
         sizes[comp] = sizes.get(comp, 0) + 1
     main = max(sizes, key=lambda k: (sizes[k], -k))
-    pool = sorted(c for c, k in label.items() if k == main and c not in probe.obstacles)
+    pool = sorted(c for c, k in label.items() if k == main and c not in probe.obstacles and c not in probe.slots)
     if len(pool) < cfg.n_robots:
         raise BuildError(f"{cfg.n_robots} robots need {cfg.n_robots} free cells but the map has {len(pool)}")
     starts: List[Pos] = []
@@ -118,6 +166,8 @@ def build(layout: str, cfg: SimConfig, a: Dict[str, Any]) -> Tuple[SimConfig, Sc
         params = strips_params(a["rows"], a["cols"], a["strips"], (a["strip_min"], a["strip_max"]),
                                a["pallets"], a["crates"], a["shelves"])
         cfg = cfg.replace(scenario="random_blocks", scenario_params=params)
+    elif layout == "site":
+        cfg = cfg.replace(scenario="mixed", scenario_params=site_params(a, cfg.seed))
     elif layout == "map":
         return cfg, scenario_from_map_file(a["map"], cfg)
     else:
@@ -153,10 +203,19 @@ def has_push_room(scenario: Scenario, cell: Pos) -> bool:
 def check(scenario: Scenario, cfg: SimConfig) -> List[str]:
     """Plain-language notes about a built map; lines starting 'info:' are not warnings."""
     out: List[str] = []
+    slot_types = set(scenario.slots.values())
+    kinds = list(scenario.obstacles.values())
     for cell, kind in sorted(scenario.obstacles.items()):
-        if not has_push_room(scenario, cell):
-            out.append(f"the {kind.replace('_', ' ')} at {cell} has no room to be pushed (the map edge or walls box it "
-                       f"in): it can never be removed")
+        name = kind.replace("_", " ")
+        if kind == "pit":
+            if not any(can_fill(k) for k in kinds):
+                out.append(f"the pit at {cell} can never be filled: there is no debris on the map")
+            continue
+        can_push = pushable(kind) and has_push_room(scenario, cell)
+        can_haul = can_carry(kind) and (slot_types & set(KINDS[kind].slots) or ("pit" in kinds and can_fill(kind)))
+        if not can_push and not can_haul:
+            out.append(f"the {name} at {cell} has no room to be pushed (the map edge or walls box it in) and "
+                       f"nowhere to be carried to: it can never be removed")
     rent = potential_rent(scenario, cfg)
     if rent == 0:
         out.append("no obstacle lies on a shortest route for any task, so there is nothing worth removing on this "

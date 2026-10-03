@@ -52,7 +52,7 @@ def test_family_d_run_with_oracle_intake(capsys):
 
 
 def test_the_removed_pit_flags_are_gone():
-    for flag in ("--claim", "--gate", "--pits", "--stock", "--depot-dist"):
+    for flag in ("--claim", "--gate", "--stock", "--depot-dist"):          # --pits came back in stage 2 (site layout)
         with pytest.raises(SystemExit):
             run_doi.main([flag, "1", "--no-show"])
 

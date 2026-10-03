@@ -21,7 +21,9 @@ LAYOUT_HELP = {
     "barrier": "two zones split by a barrier (a rack line, conveyor or trench) with removable obstacles in its "
                "openings; the long way round is through doors at the bottom",
     "strips": "an open floor with removable obstacles (pallets, crates, shelf units) anywhere, and optional wall strips",
-    "map": "your own ASCII map file (# wall, . free, L pallet, C crate, S shelf unit)",
+    "site": "a barrier whose openings hold obstacles and pits, with debris on the floor, racks along the aisles and a "
+            "dump region; robots can push, carry to a rack or the dump, or fill a pit with debris",
+    "map": "your own ASCII map file (# wall, . free, L pallet, C crate, S shelf unit, P pit, T rack, D dump slot)",
 }
 
 
@@ -52,6 +54,21 @@ LAYOUT_FIELDS: Dict[str, List[Field]] = {
          lambda v: v >= 0, "0 or more"),
         ("shelves", "Shelf units (heavy, weight 2.0)", int, lambda a: round(0.04 * a.rows * a.cols),
          lambda v: v >= 0, "0 or more"),
+    ],
+    "site": [
+        ("rows", "Grid rows (height)", int, 15, lambda v: v >= 8, "at least 8"),
+        ("cols", "Grid columns (width)", int, 21, lambda v: v >= 9, "at least 9"),
+        ("wall_col", "Barrier column", int, lambda a: a.cols // 2, lambda v: v >= 2, "at least 2, leaving room"),
+        ("blocks", "Removable obstacles in the barrier", int, 3, lambda v: v >= 0, "0 or more"),
+        ("doors", "Door rows at the bottom (the long way round)", int, 3, lambda v: v >= 1, "at least 1"),
+        ("kind", "Kind of obstacle (mixed, pallet, crate, shelf_unit)", str, "mixed",
+         lambda v: v == "mixed" or v in KINDS, "mixed, pallet, crate or shelf_unit"),
+        ("crossing", "Share of trips that cross the barrier 0-1", float, 0.8, _between(0, 1), "between 0 and 1"),
+        ("pits", "Pits in the barrier (filled with debris)", int, 2, lambda v: v >= 0, "0 or more"),
+        ("debris", "Pieces of debris on the floor", int, 3, lambda v: v >= 0, "0 or more"),
+        ("racks", "Racks along the aisles (one obstacle each)", int, 4, lambda v: v >= 0, "0 or more"),
+        ("dump_rows", "Dump region rows (0 = no dump region)", int, 2, lambda v: v >= 0, "0 or more"),
+        ("dump_cols", "Dump region columns (0 = no dump region)", int, 3, lambda v: v >= 0, "0 or more"),
     ],
     "map": [
         ("map", "Path to the ASCII map file", str, None, lambda v: bool(v), "a file path"),
@@ -154,7 +171,8 @@ def configure(args, explicit: Set[str], preview: Callable, yes: bool = False, in
                         drop_fee=getattr(args, "drop_fee", 1.0))
         answers = {k: getattr(args, k, None) for k in ("rows", "cols", "wall_col", "blocks", "doors", "kind",
                                                        "crossing", "strips", "strip_min", "strip_max", "pallets",
-                                                       "crates", "shelves", "map")}
+                                                       "crates", "shelves", "pits", "debris", "racks", "dump_rows",
+                                                       "dump_cols", "map")}
         try:
             cfg, scenario = build(layout, cfg, answers)
             break

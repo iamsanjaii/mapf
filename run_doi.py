@@ -262,9 +262,10 @@ def main(argv=None):
                          "shows the window, and offers another go")
     ap.add_argument("--build", action="store_true",
                     help="set the map and run up interactively (asks in the terminal, then previews the map)")
-    ap.add_argument("--layout", choices=["barrier", "strips", "map"], default=None,
+    ap.add_argument("--layout", choices=["barrier", "strips", "site", "map"], default=None,
                     help="build your own map: barrier (two zones, obstacles in its openings), strips (random wall "
-                         "strips plus obstacles anywhere) or map (ASCII file); asks for anything not given")
+                         "strips plus obstacles anywhere), site (barrier with pits, debris, racks and a dump "
+                         "region) or map (ASCII file); asks for anything not given")
     ap.add_argument("--rows", type=int, default=None, help="build: grid rows")
     ap.add_argument("--cols", type=int, default=None, help="build: grid columns")
     ap.add_argument("--wall-col", type=int, default=None, help="barrier: column of the barrier")
@@ -278,8 +279,13 @@ def main(argv=None):
     ap.add_argument("--pallets", type=int, default=None, help="strips: number of pallets")
     ap.add_argument("--crates", type=int, default=None, help="strips: number of crates")
     ap.add_argument("--shelves", type=int, default=None, help="strips: number of shelf units")
+    ap.add_argument("--pits", type=int, default=None, help="site: pits in the barrier")
+    ap.add_argument("--debris", type=int, default=None, help="site: pieces of debris on the floor")
+    ap.add_argument("--racks", type=int, default=None, help="site: racks along the aisles")
+    ap.add_argument("--dump-rows", type=int, default=None, help="site: rows of the dump region (0 = none)")
+    ap.add_argument("--dump-cols", type=int, default=None, help="site: columns of the dump region (0 = none)")
     ap.add_argument("--map", default=None, metavar="FILE",
-                    help="map: ASCII map file (# wall . free L pallet C crate S shelf unit)")
+                    help="map: ASCII map file (# wall . free L pallet C crate S shelf unit P pit T rack D dump slot)")
     ap.add_argument("--yes", action="store_true", help="build: accept defaults, never prompt")
     ap.add_argument("--policy", default="rof", help="one or more arms, comma separated (see --list)")
     ap.add_argument("--robots", type=int, default=12)
