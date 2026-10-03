@@ -98,6 +98,7 @@ class World:
         self.fills = 0                                   # pits filled
         self.carry_log: List[dict] = []                  # one entry per completed drop
         self.lift_ticks: List[Tuple[int, int]] = []      # (robot, tick) of every successful pick-up and drop
+        self.pick_log: List[dict] = []                   # one entry per successful pick-up
 
     def prefill(self, cells: Iterable[Pos]) -> None:
         """Remove obstacles at tick 0 (benchmark arms): the obstacle vanishes, it is not relocated."""
@@ -359,6 +360,7 @@ class World:
         self._load_from[i] = to
         self.counters[i]["picks"] += 1
         self.lift_ticks.append((i, t))
+        self.pick_log.append({"robot": i, "tick": t, "kind": kind, "origin": to})
         return ""
 
     def _drop(self, i: int, to: Pos, t: int) -> str:

@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from matplotlib.patches import Circle, Rectangle
 
+from src.doi.metrics import carried_kind, slots_full_at
 from src.doi.narrate import ARM_NOTES
 from src.doi.kinds import KINDS
 from src.doi.story import caption_at, cell_name, detour_paid, kind_label, obstacle_prices, plain_events, rent_meters
@@ -16,7 +17,8 @@ from src.environment.grid import CellType
 
 Pos = Tuple[int, int]
 COLORS = {"free": (0.96, 0.96, 0.93), "wall": (0.18, 0.19, 0.22), "pushed": (0.30, 0.72, 0.42),
-          "over": (0.82, 0.22, 0.20), "rent": (0.96, 0.68, 0.18)}
+          "over": (0.82, 0.22, 0.20), "rent": (0.96, 0.68, 0.18), "rack": (0.52, 0.40, 0.28),
+          "dump": (0.88, 0.83, 0.70)}
 TRAIL = 8
 CAPTION_WIDTH = 50
 
@@ -51,6 +53,8 @@ def _background(scenario, result) -> np.ndarray:
     for r in range(g.height):
         for c in range(g.width):
             img[r, c] = COLORS["wall"] if g.get(r, c) == CellType.OBSTACLE else COLORS["free"]
+    for (r, c), slot in scenario.slots.items():
+        img[r, c] = COLORS[slot]
     return img
 
 
@@ -68,8 +72,9 @@ def legend_for(scenario, results) -> str:
     present = {k for r in results.values() for trace in (r.obstacle_trace or [scenario.obstacles])
                for k in trace.values()}
     kinds = ", ".join(f"{KINDS[k].glyph} {kind_label(k)}" for k in KINDS if k in present)
+    slots = "   brown = rack, sand = dump zone (a small square on it = a stored obstacle)" if scenario.slots else ""
     return (f"dark = permanent wall   coloured squares = removable obstacles ({kinds or 'none'})   "
-            f"green bar = pushed away\ncircle = robot (black ring = pushing)   hollow square = where it started   "
+            f"green bar = cleared{slots}\ncircle = robot (black ring = pushing)   hollow square = where it started   "
             f"star = the cell it is heading to (same colour)")
 
 
@@ -100,9 +105,12 @@ class Scene:
         panel_h = panel_w * self.g.height / self.g.width
         meter_h = 0.5 + 0.28 * max(rows, 1)
         extra = 0.65 if controls else 0.0
-        self.fig = plt.figure(figsize=(max(panel_w * len(self.names), 9.0), panel_h + meter_h + 1.45 + extra), dpi=dpi)
+        width = max(panel_w * len(self.names), 9.0)
+        legend = "\n".join(textwrap.fill(line, int(width * 12)) for line in legend_for(scenario, results).split("\n"))
+        legend_h = 0.17 * (legend.count("\n") + 1)
+        self.fig = plt.figure(figsize=(width, panel_h + meter_h + 1.25 + legend_h + extra), dpi=dpi)
         gs = self.fig.add_gridspec(3, len(self.names), height_ratios=[panel_h, meter_h, 1.0], hspace=0.3,
-                                   top=1 - (0.85 + extra) / self.fig.get_figheight(), bottom=0.4 / self.fig.get_figheight())
+                                   top=1 - (0.85 + extra) / self.fig.get_figheight(), bottom=(0.2 + legend_h) / self.fig.get_figheight())
         self.map_axes = [self.fig.add_subplot(gs[0, k]) for k in range(len(self.names))]
         self.meter_axes = [self.fig.add_subplot(gs[1, k]) for k in range(len(self.names))]
         self.text_axes = [self.fig.add_subplot(gs[2, k]) for k in range(len(self.names))]
@@ -111,8 +119,8 @@ class Scene:
         self.fig.text(0.5, 1 - 0.55 / self.fig.get_figheight(), textwrap.fill(HEADLINE, 100), ha="center", va="center",
                       fontsize=8.5,
                       color="#444444")
-        self.fig.text(0.5, 0.2 / self.fig.get_figheight(), legend_for(scenario, results), ha="center",
-                      fontsize=8, linespacing=1.5)
+        self.fig.text(0.5, 0.1 / self.fig.get_figheight(), legend, ha="center", va="bottom", fontsize=8,
+                      linespacing=1.5)
 
     def draw(self, t: int) -> None:
         for k, name in enumerate(self.names):
@@ -130,6 +138,12 @@ class Scene:
                                    edgecolor="k", linewidth=0.8, zorder=3))
             ax.text(c, r, spec.glyph if spec else "?", ha="center", va="center", fontsize=8, color="white",
                     weight="bold", zorder=4)
+        stored = {e["target"]: e["kind"] for e in res.carry_log if e["mode"] == "carry" and e["tick"] < t}
+        for (r, c), kind in sorted(stored.items()):                    # an obstacle parked on a rack or dump cell
+            ax.add_patch(Rectangle((c - 0.32, r - 0.32), 0.64, 0.64, facecolor=KINDS[kind].color, edgecolor="k",
+                                   linewidth=0.8, zorder=3))
+            ax.text(c, r, KINDS[kind].glyph, ha="center", va="center", fontsize=6, color="white", weight="bold",
+                    zorder=4)
         pushing = pushing_robots(res, t)
         for i, traj in sorted(res.trajectory.items()):
             color = self.cmap(i % 10)
@@ -149,6 +163,10 @@ class Scene:
             ax.add_patch(Circle((c, r), 0.38, facecolor=color, edgecolor="k" if i in pushing else "white",
                                 linewidth=2.6 if i in pushing else 0.8, zorder=6))
             ax.text(c, r, str(i), ha="center", va="center", fontsize=7, color="white", zorder=7, weight="bold")
+            load = carried_kind(res, i, t)
+            if load is not None:
+                ax.add_patch(Rectangle((c + 0.05, r - 0.5), 0.45, 0.45, facecolor=KINDS[load].color,
+                                       edgecolor="white", linewidth=1.2, zorder=8))
         ax.set_xlim(-0.5, g.width - 0.5)
         ax.set_ylim(g.height - 0.5, -0.5)
         ax.set_xticks([])

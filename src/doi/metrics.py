@@ -51,6 +51,7 @@ class RunResult:
     slot_conflicts: int = 0          # drops refused because the slot was full or the pit already filled
     carry_log: List[dict] = field(default_factory=list)
     lift_ticks: List[Tuple[int, int]] = field(default_factory=list)      # (robot, tick) of every pick-up and drop
+    pick_log: List[dict] = field(default_factory=list)                   # one entry per pick-up: robot, tick, kind
 
 
 def _unreachable(result: RunResult) -> float:
@@ -111,6 +112,14 @@ def collateral_cost(result: RunResult, scenario, cfg: SimConfig) -> float:
 def loaded_at(result: RunResult, robot: int, t: int) -> bool:
     """Is the robot carrying something at trajectory index t (the state after t ticks)? Lifts alternate pick, drop."""
     return sum(1 for r, tick in result.lift_ticks if r == robot and tick < t) % 2 == 1
+
+
+def carried_kind(result: RunResult, robot: int, t: int) -> Optional[str]:
+    """The kind the robot is carrying at trajectory index t, or None."""
+    if not loaded_at(result, robot, t):
+        return None
+    picks = [e for e in result.pick_log if e["robot"] == robot and e["tick"] < t]
+    return picks[-1]["kind"] if picks else None
 
 
 def slots_full_at(result: RunResult, t: int) -> FrozenSet[Pos]:

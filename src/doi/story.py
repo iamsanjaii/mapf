@@ -18,8 +18,9 @@ class Meter:
     kind: str
     price: float
     cumulative: np.ndarray          # rent paid up to and including each tick
-    pushed_tick: Optional[int]      # first tick at which a robot pushed the obstacle off this cell, if ever
-    decided_tick: Optional[int]     # first tick at which a robot decided to push it, if ever
+    pushed_tick: Optional[int]      # first tick at which a robot cleared this cell (pushed, carried, filled), if ever
+    decided_tick: Optional[int]     # first tick at which a robot decided to clear it, if ever
+    how: str = "pushed"             # pushed, carried or filled
 
     def at(self, t: int) -> float:
         return float(self.cumulative[min(t, len(self.cumulative) - 1)])
@@ -29,9 +30,9 @@ class Meter:
 
     def status(self, t: int) -> str:
         if self.pushed_by(t):
-            return "pushed away"
+            return {"pushed": "pushed away", "carried": "carried away", "filled": "filled"}[self.how]
         if self.decided_tick is not None and self.decided_tick <= t:
-            return "pushing"
+            return {"pushed": "pushing", "carried": "carrying", "filled": "filling"}[self.how]
         return "over the price, not pushed" if self.at(t) >= self.price else ""
 
 
@@ -44,13 +45,19 @@ def kind_label(kind: str) -> str:
     return kind.replace("_", " ")
 
 
+def _subject(tr: dict) -> Tuple[Pos, ...]:
+    """The cells a decision is about: the pit for a fill (the debris is only the means), else the obstacle."""
+    return (tr["landing"],) if tr.get("mode") == "fill" else tr["cells"]
+
+
 def obstacle_prices(results: Dict[str, object]) -> Dict[Pos, Tuple[float, str]]:
     """Price (and kind) of pushing each obstacle cell, as quoted by the first arm that decided to push it."""
     prices: Dict[Pos, Tuple[float, str]] = {}
     for res in results.values():
         for tr in sorted(res.triggers, key=lambda x: x["tick"]):
-            for cell in tr["cells"]:
-                prices.setdefault(cell, (float(tr["buy"]), tr["kind"]))
+            kind = "pit" if tr.get("mode") == "fill" else tr["kind"]
+            for cell in _subject(tr):
+                prices.setdefault(cell, (float(tr["buy"]), kind))
     return prices
 
 
@@ -68,18 +75,45 @@ def rent_meters(result, prices: Dict[Pos, Tuple[float, str]], max_meters: int = 
         for info in result.plan_infos:
             if info.rent > 0 and cell in info.bundle and info.tick < n:
                 steps[info.tick] += info.rent
-        pushed = min((p["start_tick"] for p in result.pushes if p["origin"] == cell), default=None)
-        decided = min((tr["tick"] for tr in result.triggers if cell in tr["cells"]), default=None)
+        cleared = [(p["start_tick"], "pushed") for p in result.pushes if p["origin"] == cell]
+        cleared += [(e["tick"], "carried" if e["mode"] == "carry" else "filled") for e in result.carry_log
+                    if (e["origin"] == cell and e["mode"] == "carry") or (e["target"] == cell and e["mode"] == "fill")]
+        pushed, how = min(cleared, default=(None, "pushed"))
+        decided = min((tr["tick"] for tr in result.triggers if cell in _subject(tr)), default=None)
         if steps.sum() > 0 or pushed is not None:
-            meters.append(Meter(cell, kind, price, np.cumsum(steps), pushed, decided))
+            meters.append(Meter(cell, kind, price, np.cumsum(steps), pushed, decided, how))
     meters.sort(key=lambda m: -m.cumulative[-1])
     return meters[:max_meters]
+
+
+SLOT_NAME = {"rack": "rack", "dump": "dump zone"}
+
+
+def _clear_decision(tr: dict, mode: str, scenario) -> str:
+    """The caption for a decision to carry an obstacle to a slot or to fill a pit with it."""
+    known, buy, robot = tr["known"], tr["buy"], tr["robot"]
+    paid = known >= buy and buy > 0
+    if mode == "fill":
+        what = f"the pit at {cell_name(tr['landing'])} with the {kind_label(tr['kind'])} at {cell_name(tr['cells'])}"
+        if paid:
+            return f"Detours so far cost {known:.0f}, filling {what} costs {buy:.0f}: robot {robot} decides to fill it"
+        return f"Robot {robot} fills {what}: it is cheaper than going round"
+    slot = SLOT_NAME[scenario.slots[tr["landing"]]]
+    what = f"the {kind_label(tr['kind'])} at {cell_name(tr['cells'])} to the {slot} at {cell_name(tr['landing'])}"
+    if paid:
+        return (f"Detours so far cost {known:.0f}, carrying {what} costs {buy:.0f}: "
+                f"robot {robot} decides to carry it")
+    return f"Robot {robot} carries {what}: it is cheaper than going round"
 
 
 def plain_events(result, scenario) -> List[Tuple[int, str]]:
     """What happened, in sentences a reviewer can read cold."""
     out: List[Tuple[int, str]] = []
     for tr in sorted(result.triggers, key=lambda x: x["tick"]):
+        mode = tr.get("mode", "push")
+        if mode != "push":
+            out.append((tr["tick"], _clear_decision(tr, mode, scenario)))
+            continue
         what = f"the {kind_label(tr['kind'])} at {cell_name(tr['cells'])}"
         if tr["known"] >= tr["buy"] and tr["buy"] > 0:
             out.append((tr["tick"], f"Detours so far cost {tr['known']:.0f}, pushing {what} costs "
@@ -91,6 +125,14 @@ def plain_events(result, scenario) -> List[Tuple[int, str]]:
         way = WORDS[((l[0] > o[0]) - (l[0] < o[0]), (l[1] > o[1]) - (l[1] < o[1]))]
         out.append((run["start_tick"], f"Robot {run['robot']} pushes the {kind_label(run['kind'])} at "
                                        f"{cell_name(o)} {n} cell{'s' if n != 1 else ''} {way}, to {cell_name(l)}"))
+    for e in result.carry_log:
+        if e["mode"] == "fill":
+            out.append((e["tick"], f"Robot {e['robot']} filled the pit at {cell_name(e['target'])} with "
+                                   f"{kind_label(e['kind'])} from {cell_name(e['origin'])}"))
+        else:
+            out.append((e["tick"], f"Robot {e['robot']} carried the {kind_label(e['kind'])} from "
+                                   f"{cell_name(e['origin'])} to the {SLOT_NAME[scenario.slots[e['target']]]} at "
+                                   f"{cell_name(e['target'])}"))
     for oid, tick in sorted(result.appeared_at.items()):
         inc = next(i for i in scenario.incidents if i.oid == oid)
         out.append((tick, f"{inc.kind.capitalize()} appears at {cell_name(inc.cells)}: robots must go round it "
