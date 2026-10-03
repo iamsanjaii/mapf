@@ -89,7 +89,9 @@ simulated supervisor, `rof_pit`, `rof_w`, `rof_x`, experiments E1, E3, E4, E6, E
 
 ## Later stages
 
-2. Carry: dump zones `Z`, pick-up and drop actions, dump-slot capacity, per-kind choice of mode.
+2. Carry: dump zones `Z`, pick-up and drop actions, dump-slot capacity, per-kind choice of mode. Planned in
+   `docs/superpowers/plans/2026-10-03-stage2-carry-and-dump.md` (central dump zone, racks as slots, pits filled
+   by debris; from the professor's brief).
 3. Detour pushes justified by the ledger, claim lock, window features, E1-E8 re-expressed and re-piloted,
    theory wording (collateral adds a term to the bound).
 
