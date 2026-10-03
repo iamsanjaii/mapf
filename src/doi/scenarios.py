@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from src.doi.config import SimConfig
-from src.doi.kinds import GLYPHS, KINDS
+from src.doi.kinds import GLYPHS, KINDS, SLOT_GLYPHS
 from src.doi.maps import load_movingai
 from src.doi.rng import stream
 from src.environment.grid import CellType, Grid
@@ -72,6 +72,7 @@ class Scenario:
     reports: List[Report] = field(default_factory=list)
     locations: Dict[str, Tuple[Pos, ...]] = field(default_factory=dict)
     meta: Dict[str, Any] = field(default_factory=dict)
+    slots: Dict[Pos, str] = field(default_factory=dict)    # cells that hold a carried obstacle: cell -> rack or dump
 
 
 def _resolve_params(cfg: SimConfig) -> Dict[str, Any]:
@@ -88,22 +89,28 @@ def _resolve_params(cfg: SimConfig) -> Dict[str, Any]:
 def scenario_from_ascii(rows: List[str], starts: List[Pos], tasks: List[List[Pos]], name: str = "ascii",
                         incidents: Sequence[Incident] = (), reports: Sequence[Report] = (),
                         locations: Optional[Dict[str, Tuple[Pos, ...]]] = None) -> Scenario:
-    """# wall, . free, and a kind glyph (L pallet, C crate, S shelf unit, ...) for a removable obstacle."""
+    """# wall, . free, a kind glyph (L pallet, C crate, S shelf unit, P pit, ...) for a removable obstacle,
+    D a dump-region slot (walkable floor) and T a rack slot (a fixture: not walkable)."""
     if len({len(r) for r in rows}) != 1:
         raise ValueError("all ascii rows must have equal length")
     grid = Grid(len(rows[0]), len(rows))
     obstacles: Dict[Pos, str] = {}
+    slots: Dict[Pos, str] = {}
     for r, row in enumerate(rows):
         for c, ch in enumerate(row):
             if ch == "#":
                 grid.set(r, c, CellType.OBSTACLE)
+            elif ch in SLOT_GLYPHS:
+                slots[(r, c)] = SLOT_GLYPHS[ch]
+                if SLOT_GLYPHS[ch] == "rack":
+                    grid.set(r, c, CellType.OBSTACLE)
             elif ch in GLYPHS:
                 obstacles[(r, c)] = GLYPHS[ch]
             elif ch != ".":
                 raise ValueError(f"bad ascii character {ch!r}")
     return Scenario(name=name, family="ascii", grid=grid, obstacles=obstacles, starts=list(starts),
                     tasks=[list(t) for t in tasks], incidents=list(incidents), reports=list(reports),
-                    locations=dict(locations or {}), meta={"params": {}, "seed": 0})
+                    locations=dict(locations or {}), meta={"params": {}, "seed": 0}, slots=slots)
 
 
 def _draw_starts(cfg: SimConfig, pools: List[List[Pos]]) -> List[Pos]:

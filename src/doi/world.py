@@ -3,12 +3,13 @@ from dataclasses import dataclass
 from typing import Dict, FrozenSet, Iterable, List, Optional, Set, Tuple, Union
 
 from src.doi.config import SimConfig
-from src.doi.kinds import weight
+from src.doi.kinds import KINDS, can_carry, can_fill, pushable, weight
 from src.doi.scenarios import Scenario
 from src.environment.grid import CellType
 
 Pos = Tuple[int, int]
-COUNTER_KEYS = ("moves", "waits", "push_steps", "push_rejected", "wrong_class_attempts")
+COUNTER_KEYS = ("moves", "waits", "push_steps", "push_rejected", "wrong_class_attempts", "carry_steps", "picks",
+                "drops", "slot_conflicts")
 
 
 @dataclass(frozen=True)
@@ -27,7 +28,19 @@ class Push:
     to: Pos
 
 
-Action = Union[Move, Wait, Push]
+@dataclass(frozen=True)
+class Pick:
+    """Lift the obstacle on the neighbouring cell `to` (the robot stays where it is and becomes loaded)."""
+    to: Pos
+
+
+@dataclass(frozen=True)
+class Drop:
+    """Put the carried obstacle on the neighbouring slot cell `to`, or into the neighbouring pit `to`."""
+    to: Pos
+
+
+Action = Union[Move, Wait, Push, Pick, Drop]
 
 
 @dataclass(frozen=True)
@@ -45,6 +58,7 @@ class Observation:
     kinds: Tuple[Tuple[Pos, str], ...]     # their kinds
     clearable: FrozenSet[Pos]              # those that are plainly ordinary obstacles a robot may push
     scanned: FrozenSet[Pos]                # cells seen to be free
+    slots_full: FrozenSet[Pos] = frozenset()    # slot cells within sensing range that hold an obstacle
 
 
 def _manhattan(a: Pos, b: Pos) -> int:
@@ -75,6 +89,14 @@ class World:
         self.counters: Dict[int, Dict[str, int]] = {i: {k: 0 for k in COUNTER_KEYS} for i in range(n)}
         self.incident_cls: Dict[Pos, str] = {c: inc.cls for inc in scenario.incidents for c in inc.cells}
         self._suppressed: Set[int] = set()
+        self.slots: Dict[Pos, str] = dict(scenario.slots)
+        self.slot_items: Dict[Pos, str] = {}             # slot cell -> the kind stored there (never an obstacle)
+        self.filled_pits: Set[Pos] = set()
+        self.load: Dict[int, Optional[str]] = {i: None for i in range(n)}
+        self._load_from: Dict[int, Pos] = {}
+        self.carry_cost = 0.0                            # sum of kappa_c * weight over loaded steps
+        self.fills = 0                                   # pits filled
+        self.carry_log: List[dict] = []                  # one entry per completed drop
 
     def prefill(self, cells: Iterable[Pos]) -> None:
         """Remove obstacles at tick 0 (benchmark arms): the obstacle vanishes, it is not relocated."""
@@ -118,7 +140,8 @@ class World:
         near = sorted((c, k) for c, k in self.obstacles.items() if _manhattan(me, c) <= r_sense)
         return Observation(robot_cells=others, blocked_cells=frozenset(c for c, _ in near),
                            kinds=tuple(near), clearable=frozenset(c for c, _ in near if c in self.plain),
-                           scanned=frozenset(scanned))
+                           scanned=frozenset(scanned),
+                           slots_full=frozenset(c for c in self.slot_items if _manhattan(me, c) <= r_sense))
 
     def _key(self, i: int) -> Tuple[int, int]:
         return (-self.blocked_ticks[i], i)
@@ -199,6 +222,17 @@ class World:
                 cost += step + (self.cfg.fee if self._open_run[i]["steps"] == 1 else 0.0)
                 self.push_cost += step
 
+        lifts = (i for i, a in actions.items() if i in self.pos and isinstance(a, (Pick, Drop)))
+        for i in sorted(lifts, key=self._key):
+            a = actions[i]
+            reason = self._pick(i, a.to, t) if isinstance(a, Pick) else self._drop(i, a.to, t)
+            if reason:
+                reasons[i] = reason
+                blocked_now.add(i)
+            else:
+                moved_ok.add(i)                           # a lift is not a wait: it costs its fee instead
+                cost += self.cfg.pick_fee if isinstance(a, Pick) else self.cfg.drop_fee
+
         legal: Dict[int, Pos] = {}
         for i, a in sorted(actions.items()):
             if i not in self.pos or not isinstance(a, Move):
@@ -221,7 +255,13 @@ class World:
             self.pos[i] = to
             moved_ok.add(i)
             self.counters[i]["moves"] += 1
-            cost += 1.0
+            if self.load[i] is None:
+                cost += 1.0
+            else:
+                step = self.cfg.kappa_c * weight(self.load[i])
+                cost += step
+                self.carry_cost += step
+                self.counters[i]["carry_steps"] += 1
 
         for i in self.pos:
             self.blocked_ticks[i] = self.blocked_ticks[i] + 1 if i in blocked_now else 0
@@ -250,11 +290,15 @@ class World:
     def _push(self, i: int, to: Pos, t: int) -> str:
         """Slide the obstacle at `to` one cell further from robot i and move the robot in. '' on success."""
         p = self.pos[i]
+        if self.load[i] is not None:
+            return "loaded"
         if _manhattan(p, to) != 1:
             return "not_adjacent"
         kind = self.obstacles.get(to)
         if kind is None:
             return "no_obstacle"
+        if not pushable(kind):
+            return "not_pushable"
         if self.incident_cls.get(to) == "needs_human":
             self.counters[i]["wrong_class_attempts"] += 1
             return "needs_human"
@@ -290,6 +334,64 @@ class World:
             self.push_log.append({"robot": i, "kind": kind, "origin": to, "landing": beyond, "start_tick": t,
                                   "end_tick": t, "steps": 1})
         run["weight"] = weight(kind)
+        return ""
+
+    def _pick(self, i: int, to: Pos, t: int) -> str:
+        """Lift the obstacle at `to`; the robot stays put, loaded. '' on success."""
+        if self.load[i] is not None:
+            return "loaded"
+        if _manhattan(self.pos[i], to) != 1:
+            return "not_adjacent"
+        kind = self.obstacles.get(to)
+        if kind is None:
+            return "no_obstacle"
+        if not can_carry(kind):
+            return "not_carriable"
+        if self.incident_cls.get(to) == "needs_human":
+            self.counters[i]["wrong_class_attempts"] += 1
+            return "needs_human"
+        del self.obstacles[to]
+        self.plain.discard(to)
+        self.incident_cls.pop(to, None)
+        self.grid.set(to[0], to[1], CellType.FREE)
+        self.load[i] = kind
+        self._load_from[i] = to
+        self.counters[i]["picks"] += 1
+        return ""
+
+    def _drop(self, i: int, to: Pos, t: int) -> str:
+        """Put the carried obstacle on slot `to` or into pit `to`. '' on success."""
+        kind = self.load[i]
+        if kind is None:
+            return "not_loaded"
+        if _manhattan(self.pos[i], to) != 1:
+            return "not_adjacent"
+        if to in self.slots:
+            if self.slots[to] not in KINDS[kind].slots:
+                return "wrong_slot"
+            if to in self.slot_items:
+                self.counters[i]["slot_conflicts"] += 1
+                return "full"
+            self.slot_items[to] = kind
+            mode = "carry"
+        elif self.obstacles.get(to) == "pit":
+            if not can_fill(kind):
+                return "wrong_slot"
+            del self.obstacles[to]
+            self.plain.discard(to)
+            self.grid.set(to[0], to[1], CellType.FREE)
+            self.filled_pits.add(to)
+            self.fills += 1
+            mode = "fill"
+        elif to in self.filled_pits:
+            self.counters[i]["slot_conflicts"] += 1
+            return "full"
+        else:
+            return "no_target"
+        self.load[i] = None
+        self.counters[i]["drops"] += 1
+        self.carry_log.append({"robot": i, "kind": kind, "origin": self._load_from.pop(i, None), "target": to,
+                               "mode": mode, "tick": t})
         return ""
 
     def _check(self, old_pos: Dict[int, Pos]) -> None:

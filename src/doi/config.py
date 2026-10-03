@@ -3,6 +3,10 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from src.doi.kinds import KINDS
+
+_LIGHTEST = min(k.weight for k in KINDS.values() if k.slots)      # lightest kind a robot can carry
+
 POLICIES = frozenset({"never", "myopic", "eager", "rof", "rof_local", "rof_f", "central", "hindsight", "free",
                       "rof_r", "rof_p"})
 
@@ -16,6 +20,9 @@ class SimConfig:
     tasks_per_robot: int = 20
     kappa: float = 4.0          # cost of one push step is kappa * the obstacle kind's weight
     fee: float = 1.0            # cost of each push run
+    kappa_c: float = 2.0        # cost of one loaded step is kappa_c * the carried kind's weight
+    pick_fee: float = 1.0       # cost of picking an obstacle up
+    drop_fee: float = 1.0       # cost of dropping it into a slot or pit
     push_max: int = 6           # longest straight push a robot will plan
     unreachable_cost: Optional[float] = None
     r_sense: int = 2
@@ -54,6 +61,8 @@ class SimConfig:
             (self.n_robots >= 1, "n_robots must be >= 1"),
             (self.tasks_per_robot >= 1, "tasks_per_robot must be >= 1"),
             (self.push_max >= 1, "push_max must be >= 1"),
+            (self.kappa_c * _LIGHTEST >= 1.0, "kappa_c too small: a loaded step must cost at least an empty one"),
+            (self.pick_fee >= 0 and self.drop_fee >= 0, "pick_fee and drop_fee must be >= 0"),
             (self.policy in POLICIES, f"unknown policy {self.policy!r}"),
             (self.bundle_max in (1, 2), "bundle_max must be 1 or 2"),
             (0 < self.lam <= 1, "lam must be in (0, 1]"),
