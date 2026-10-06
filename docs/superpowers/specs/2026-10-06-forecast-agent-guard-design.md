@@ -577,7 +577,11 @@ data, because the texts are sent to a hosted API. Until this file exists, level 
 
 `experiments/doi_e9_agent.py`, on the shared grid runner in `doi_common.py`.
 
-* Scenario `shift_notice`, 8 robots, 20 tasks each, `lam = 0.5`, `bundle_max = 1`, seeds 200..229.
+* Scenario `shift_notice`, 8 robots, 20 tasks each, `lam = 0.5`, `bundle_max = 1`.
+* Seeds 200..299 for arms that need no model; model arms run on 200..229 unless the budget allows more.
+* Measure: **avoidable cost**, `J_censored` minus the `J_censored` of the `free` arm on the same seed. Total cost
+  is mostly travel that no rule can avoid, so differences between forecasters are a small share of it
+  (section 14.4).
 * Axis: `notice_mode` in `true`, `false`, `missing`, `quiet`.
 * Arms: `never`, `rof`, `rof_p`, and `rof_a` with each of `numeric`, `keyword`, `oracle`, `inverted`,
   `llm:small` (tools), `llm:large` (tools), `llm:small` (single).
@@ -595,6 +599,21 @@ Hypotheses, stated before any full run:
 
 The margin in H9c and the tests used are fixed after the `--quick` pilot and before the full run, written into
 `docs/research/results.md`, and marked with the git tag `prereg-agent-v1`. They are not changed afterwards.
+
+### 14.4 Headroom gate (added 2026-10-06, after a scratch check)
+
+A model can only help as much as a perfect forecast helps. A scratch check on the existing `shift` scenario (8
+robots, 20 tasks, seeds 200..229, `lam = 0.5`, default costs, lazy guard) gave these mean avoidable costs:
+no forecast 142, numeric forecast 142, perfect forecast 112, inverted forecast 172. A perfect forecast therefore
+removes about a fifth of the avoidable cost, which is about 1.3% of total cost, and its paired advantage over the
+numeric forecast was not clearly separated from zero at 30 seeds (median 3.5, 95% interval 0 to 30.5). This was
+not run on `shift_notice`, which did not exist yet.
+
+So the build has a gate. After the guard, the notices, the scenario and the forecasters that need no model are
+built, `experiments/doi_e9_headroom.py` measures `oracle`, `numeric`, `inverted`, `keyword` and no forecast on
+`shift_notice` over 100 seeds and a small set of cost settings. The model parts are built only if the owner
+decides the headroom is worth it. If it is not, the options are a different scenario or cost setting, or stopping
+at the non-model result. No model call is made before this gate.
 
 ---
 
@@ -659,11 +678,12 @@ attribution.
 1. Guard on pure numbers and Proposition 5 in `theory.md`.
 2. Notices: records, belief component, feed, template banks; scenario `shift_notice`.
 3. Forecast case, truth label and tools.
-4. Chat client, record and replay, the agent loop.
-5. Forecasters, `GuardedPolicy`, runner and robot hooks, metrics, command-line flags.
-6. Dataset builder and `doi_agent_eval.py`.
-7. `doi_e9_agent.py`, quick mode only.
-8. Documents: README arms table, `narrate.py`, demo guide, results status.
+4. The forecasters that need no model, `GuardedPolicy`, runner and robot hooks, metrics.
+5. The headroom pilot (section 14.4). **The build stops here for the owner's decision.**
+6. Chat client, record and replay, the agent loop, the model forecaster, command-line flags.
+7. Dataset builder and `doi_agent_eval.py`.
+8. `doi_e9_agent.py`, quick mode only.
+9. Documents: README arms table, `narrate.py`, demo guide, results status.
 
 No full experiment and no paid model call is part of the build. Those are run by the owner afterwards, after the
 pilot and the preregistration tag.
@@ -685,6 +705,9 @@ pilot and the preregistration tag.
 
 ## 18. Risks and what is not claimed
 
+* **Small headroom.** On the existing `shift` scenario a perfect forecast removes about a fifth of the avoidable
+  cost and about 1.3% of total cost (section 14.4). A real model will capture only part of that, so the end-to-end
+  effect may be too small to show. The headroom gate exists to find this out before any model work.
 * **No bound in the simulator.** Proposition 5 is for one candidate action in the abstract model. With several
   candidates, a price that moves with the robot, and congestion, cost is measured.
 * **The scenario is built for the agent.** `shift_notice` exists so that text carries information the ledger
