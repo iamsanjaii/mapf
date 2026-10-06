@@ -11,6 +11,7 @@ from src.doi.metrics import RunResult
 from src.doi.crdt import ObstructionRecord
 from src.doi.incidents import location_names, locate, render_report, report_rng
 from src.doi.network import Network
+from src.doi.notices import NoticeFeed
 from src.doi.policies import CentralPolicy, HindsightPolicy, PushPolicy, Shared, make_policy
 from src.doi.scenarios import Scenario, build_scenario
 from src.doi.rng import u01
@@ -95,6 +96,7 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
     agents = [RobotAgent(i, scenario, cfg, policy, shared) for i in range(len(scenario.starts))]
     shared.agents = agents
     intake = Intake(scenario, cfg)
+    feed = NoticeFeed(scenario)
     for a in agents:                        # obstacles removed at tick 0 (benchmark arms) are known to everyone
         for c in sorted(set(scenario.obstacles) - set(world.obstacles)):
             a.belief.observe_cell(c, False, 1)      # seen free later than the tick-0 sighting
@@ -114,6 +116,7 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
             policy.sync(world, active, t)
         intake.emit(t, agents)
         intake.deliver(t, agents)
+        feed.emit(t, agents)
         for a in active:
             a.sense(world.observe(a.id, cfg.r_sense), t)
         inbox = network.deliver(t)
@@ -203,7 +206,9 @@ def build_result(cfg, policy, world, network, agents, shared, ticks, stalled, ru
         fills=world.fills, carry_steps=carry_steps, carry_cost=float(world.carry_cost),
         slot_conflicts=sum(c["slot_conflicts"] for c in world.counters.values()),
         carry_log=[dict(e) for e in world.carry_log], lift_ticks=list(world.lift_ticks),
-        pick_log=[dict(e) for e in world.pick_log])
+        pick_log=[dict(e) for e in world.pick_log],
+        notice_reach={n.notice_id: sum(1 for a in agents if a.belief.notices.get(n.notice_id) is not None)
+                      for n in scenario.notices})
 
 
 def run_arms(cfg: SimConfig, arms: Sequence[str]) -> Dict[str, RunResult]:

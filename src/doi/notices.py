@@ -9,6 +9,8 @@ import os
 import random
 from typing import Dict, List, Optional, Tuple
 
+from src.doi.crdt import NoticeRecord
+
 KINDS = ("surge", "drop", "distractor")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -75,3 +77,25 @@ def render_text(kind: str, group: str, other: str, bank: str, rng: random.Random
         raise ValueError(f"unknown notice bank {bank!r}: choose dev, test or human")
     template = rng.choice(BANKS[bank][kind])
     return rng.choice(PREFIXES[bank]) + template.format(group=group, other=other)
+
+
+class NoticeFeed:
+    """Hands each notice, at its tick, to the live robot nearest the map centre. Gossip does the rest.
+
+    There is no broadcast to the fleet: who knows a notice depends on range, loss and delay, as with the ledger."""
+
+    def __init__(self, scenario) -> None:
+        self.by_tick: Dict[int, list] = {}
+        for n in scenario.notices:
+            self.by_tick.setdefault(n.emit_tick, []).append(n)
+        self.centre = (scenario.grid.height // 2, scenario.grid.width // 2)
+        self.delivered = 0
+
+    def emit(self, t: int, agents) -> None:
+        for n in self.by_tick.get(t, []):
+            live = [a for a in agents if not a.finished]
+            if not live:
+                continue
+            target = min(live, key=lambda a: (abs(a.pos[0] - self.centre[0]) + abs(a.pos[1] - self.centre[1]), a.id))
+            target.ingest_notice(NoticeRecord(n.notice_id, t, n.text))
+            self.delivered += 1

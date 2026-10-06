@@ -52,6 +52,7 @@ class RunResult:
     carry_log: List[dict] = field(default_factory=list)
     lift_ticks: List[Tuple[int, int]] = field(default_factory=list)      # (robot, tick) of every pick-up and drop
     pick_log: List[dict] = field(default_factory=list)                   # one entry per pick-up: robot, tick, kind
+    notice_reach: Dict[str, int] = field(default_factory=dict)          # notice id -> robots that knew it at the end
 
 
 def _unreachable(result: RunResult) -> float:

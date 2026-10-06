@@ -15,6 +15,9 @@ SCENARIO_NOTES: Dict[str, Tuple[str, str]] = {
                               "times; a good all-round demo with 8 to 12 robots."),
     "shift": ("S", "Like multi_block_wall, but half way through the run the busy region moves, so old evidence "
                    "becomes stale."),
+    "shift_notice": ("S", "The shift scenario with text notices: a short message tells one robot that work is about "
+                          "to move to the other bays, and it spreads by gossip. The notice can be true, false or "
+                          "missing (scenario parameter notice_mode), so a forecaster that reads it can be tested."),
     "complements": ("S", "Three rooms in a row; each wall has a doorway at the top blocked by a pallet and open "
                          "doors at the bottom. Opening one doorway saves nothing; opening both saves a lot (the "
                          "obstacles are complements)."),

@@ -133,6 +133,9 @@ class RobotAgent:
         self.belief.add_obstruction(rec, t)
         self.replan_needed = True
 
+    def ingest_notice(self, rec) -> None:
+        self.belief.add_notice(rec)
+
     def _reservations(self, t: int) -> Set[Tuple[Pos, int]]:
         if self._reserved_cache[0] == t:
             return self._reserved_cache[1]

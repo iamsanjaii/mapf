@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from src.doi.config import SimConfig
 from src.doi.kinds import GLYPHS, KINDS, SLOT_GLYPHS
 from src.doi.maps import load_movingai
+from src.doi.notices import render_text
 from src.doi.rng import stream
 from src.environment.grid import CellType, Grid
 
@@ -51,9 +52,12 @@ DEFAULTS: Dict[str, Dict[str, Any]] = {
     "incidents_room": dict(n_incidents=2, q_cross=0.8, **_INCIDENT_COMMON),
     "incidents_aisles": dict(n_incidents=4, **_INCIDENT_COMMON),
 }
+DEFAULTS["shift_notice"] = dict(DEFAULTS["shift"], notice_mode="true", notice_tick=5, n_distractors=1,
+                                notice_bank="test", human_notices="data/forecasts/human_notices.jsonl")
+NOTICE_MODES = ("true", "false", "missing", "quiet")
 
 _CARRY_SCENES = ("warehouse_racks", "dump_central", "site_pits", "mixed")
-_TWO_ROOM = ("single_block", "two_blocks_parallel", "series_blocks", "multi_block_wall", "shift")
+_TWO_ROOM = ("single_block", "two_blocks_parallel", "series_blocks", "multi_block_wall", "shift", "shift_notice")
 _DOORS = {"north door": (2, 10), "middle door": (7, 10), "south door": (12, 10)}
 
 
@@ -76,6 +80,16 @@ class Report:
     cls: str
 
 
+@dataclass(frozen=True)
+class Notice:
+    notice_id: str
+    emit_tick: int
+    kind: str                # "surge" | "drop" | "distractor"
+    group: Optional[str]     # zone group the notice is about; None for a distractor
+    is_true: bool            # hidden from robots; used only for scoring
+    text: str                # what robots receive
+
+
 @dataclass
 class Scenario:
     name: str
@@ -89,6 +103,8 @@ class Scenario:
     locations: Dict[str, Tuple[Pos, ...]] = field(default_factory=dict)
     meta: Dict[str, Any] = field(default_factory=dict)
     slots: Dict[Pos, str] = field(default_factory=dict)    # cells that hold a carried obstacle: cell -> rack or dump
+    notices: List[Notice] = field(default_factory=list)
+    zones: Dict[str, Tuple[Pos, ...]] = field(default_factory=dict)    # named regions, for forecasting only
 
 
 def _resolve_params(cfg: SimConfig) -> Dict[str, Any]:
@@ -176,6 +192,31 @@ def _two_room_agents(cfg: SimConfig, grid: Grid, rooms: Dict[str, List[Pos]], q_
     return starts, tasks
 
 
+def _add_notices(scenario: Scenario, cfg: SimConfig, params: Dict[str, Any], rooms: Dict[str, List[Pos]]) -> None:
+    """Zones and notices of shift_notice. The band that is busy first is the "north bays", the later one the
+    "south bays". A notice's kind, group and is_true stay in the scenario; a robot only ever receives its text."""
+    bands = {"north bays": params["hot_before"], "south bays": params["hot_after"]}
+    scenario.zones = {f"{side} {group}": tuple(p for p in cells if lo <= p[0] <= hi and p not in scenario.obstacles)
+                      for side, cells in sorted(rooms.items()) for group, (lo, hi) in bands.items()}
+    bank, path = params["notice_bank"], params["human_notices"]
+    notices: List[Notice] = []
+
+    def add(nid: str, tick: int, kind: str, group: str, other: str, is_true: bool) -> None:
+        text = render_text(kind, group, other, bank, stream(cfg.seed, f"notice-{nid}"), path)
+        notices.append(Notice(nid, tick, kind, None if kind == "distractor" else group, is_true, text))
+
+    if params["notice_mode"] in ("true", "false"):
+        is_true = params["notice_mode"] == "true"
+        add("n0", params["notice_tick"], "surge", "south bays", "north bays", is_true)
+        add("n1", params["notice_tick"], "drop", "north bays", "south bays", is_true)
+    rng = stream(cfg.seed, "notices")
+    for d in range(params["n_distractors"]):
+        tick = rng.randint(0, 2 * params["notice_tick"])
+        group, other = rng.sample(["north bays", "south bays"], 2)
+        add(f"d{d}", tick, "distractor", group, other, True)
+    scenario.notices = sorted(notices, key=lambda n: (n.emit_tick, n.notice_id))
+
+
 def _two_room(cfg: SimConfig, params: Dict[str, Any]) -> Scenario:
     H, W = params["H"], params["W"]
     wc, wt = params["wall_col"], params["wall_thick"]
@@ -201,11 +242,23 @@ def _two_room(cfg: SimConfig, params: Dict[str, Any]) -> Scenario:
             grid.set(r, c, CellType.FREE)
     west_cols, east_cols = range(0, wc), range(e + 1, W)
     rooms = {"west": _room_cells(grid, west_cols), "east": _room_cells(grid, east_cols)}
-    shift = params if cfg.scenario == "shift" else None
+    shift = params if cfg.scenario in ("shift", "shift_notice") else None
+    if cfg.scenario == "shift_notice":
+        mode = params["notice_mode"]
+        if mode not in NOTICE_MODES:
+            raise ValueError(f"unknown notice_mode {mode!r}: choose from {', '.join(NOTICE_MODES)}")
+        if mode in ("false", "quiet"):                       # the busy band never moves
+            shift = dict(params, shift_after_task=cfg.tasks_per_robot)
+        elif cfg.tasks_per_robot <= params["shift_after_task"]:
+            raise ValueError(f"notice_mode {mode!r} needs tasks_per_robot above shift_after_task "
+                             f"({params['shift_after_task']}), or the busy band never moves")
     starts, tasks = _two_room_agents(cfg, grid, rooms, params["q_cross"], set(obstacles), shift)
-    return Scenario(name=cfg.scenario, family="S", grid=grid, obstacles=obstacles, starts=starts, tasks=tasks,
-                    meta={"rooms": {"west_cols": west_cols, "east_cols": east_cols},
-                          "params": params, "seed": cfg.seed})
+    scenario = Scenario(name=cfg.scenario, family="S", grid=grid, obstacles=obstacles, starts=starts, tasks=tasks,
+                        meta={"rooms": {"west_cols": west_cols, "east_cols": east_cols},
+                              "params": params, "seed": cfg.seed})
+    if cfg.scenario == "shift_notice":
+        _add_notices(scenario, cfg, params, rooms)
+    return scenario
 
 
 def _carry_scene(cfg: SimConfig, params: Dict[str, Any]) -> Scenario:
