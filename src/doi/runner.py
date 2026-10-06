@@ -122,6 +122,7 @@ def run_episode(cfg: SimConfig, scenario: Optional[Scenario] = None,
         inbox = network.deliver(t)
         for a in active:
             a.receive(inbox.get(a.id, []), t)
+        policy.on_tick(active, t)
         actions = {a.id: a.decide(t) for a in active}
         positions = dict(world.pos)
         for a in active:
@@ -208,7 +209,8 @@ def build_result(cfg, policy, world, network, agents, shared, ticks, stalled, ru
         carry_log=[dict(e) for e in world.carry_log], lift_ticks=list(world.lift_ticks),
         pick_log=[dict(e) for e in world.pick_log],
         notice_reach={n.notice_id: sum(1 for a in agents if a.belief.notices.get(n.notice_id) is not None)
-                      for n in scenario.notices})
+                      for n in scenario.notices},
+        forecast_log=[dict(r) for r in shared.forecast_log], forecast_cases=list(shared.forecast_cases))
 
 
 def run_arms(cfg: SimConfig, arms: Sequence[str]) -> Dict[str, RunResult]:

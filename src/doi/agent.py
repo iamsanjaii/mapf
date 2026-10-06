@@ -87,6 +87,8 @@ class RobotAgent:
         self._carrying = False
         self._unload_key = None
         self._push_key = None
+        self.forecasts: Dict[tuple, object] = {}        # rof_a: plan key -> ForecastState
+        self.forecast_epoch = 0                         # rof_a: bumped when a late forecast becomes visible
         self._last_action: Optional[Action] = None
         self._reserved_cache: Tuple[int, Set[Tuple[Pos, int]]] = (-1, set())
 
@@ -383,7 +385,8 @@ class RobotAgent:
         if not self.policy.pushes or self.pos == self.goal or self.load is not None:
             return None
         b = self.belief
-        key = (b.version, self.pos, self.goal, tuple(sorted(c for c, u in self.deferred_until.items() if u > t)))
+        key = (b.version, self.pos, self.goal, tuple(sorted(c for c, u in self.deferred_until.items() if u > t)),
+               self.forecast_epoch)
         if key == self._push_key:
             return None
         self._push_key = key

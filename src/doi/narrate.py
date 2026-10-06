@@ -55,6 +55,8 @@ ARM_NOTES: Dict[str, str] = {
     "rof_f": "Rent-or-Fill that forecasts the fleet's remaining traffic from what it has seen",
     "rof_r": "Rent-or-Fill with a random threshold between 0 and 1 times the price (expected ratio e/(e-1))",
     "rof_p": "Rent-or-Fill that lowers its threshold when its forecast says the push will pay, and raises it when not",
+    "rof_a": "Rent-or-Fill guarded: a forecaster says whether the move will pay; the threshold is lowered on a yes, "
+             "raised on a no, and stays at the price while there is no answer",
     "central": "Rent-or-Fill with one omniscient ledger and map (the cost of NOT being decentralised)",
     "hindsight": "benchmark: knows every task in advance, removes the best obstacles at tick 0, charged the lowest "
                  "possible price",

@@ -53,6 +53,8 @@ class RunResult:
     lift_ticks: List[Tuple[int, int]] = field(default_factory=list)      # (robot, tick) of every pick-up and drop
     pick_log: List[dict] = field(default_factory=list)                   # one entry per pick-up: robot, tick, kind
     notice_reach: Dict[str, int] = field(default_factory=dict)          # notice id -> robots that knew it at the end
+    forecast_log: List[dict] = field(default_factory=list)              # rof_a: one row per forecast requested
+    forecast_cases: List[Any] = field(default_factory=list)             # rof_a: the case behind each answered one
 
 
 def _unreachable(result: RunResult) -> float:
@@ -160,6 +162,24 @@ def _mean(xs: List[float]) -> float:
     return sum(xs) / len(xs) if xs else float("nan")
 
 
+def forecast_columns(log: List[dict]) -> dict:
+    """Counts over a run's forecast log. A wrong yes pays the price early; a wrong no pays detours for longer."""
+    scored = [r for r in log if r["answer"] is not None and r["truth"] is not None]
+    return {
+        "forecasts": len(log),
+        "forecast_failed": sum(1 for r in log if r["failed"]),
+        "forecast_skipped": sum(1 for r in log if r["skipped"]),
+        "forecast_acc": (sum(1 for r in scored if r["answer"] == r["truth"]) / len(scored)) if scored
+        else float("nan"),
+        "wrong_yes": sum(1 for r in scored if r["answer"] and not r["truth"]),
+        "wrong_no": sum(1 for r in scored if not r["answer"] and r["truth"]),
+        "agent_calls": sum(r["calls"] for r in log),
+        "agent_latency_s": float(sum(r["latency_s"] for r in log)),
+        "agent_prompt_tokens": sum(r["prompt_tokens"] for r in log),
+        "agent_completion_tokens": sum(r["completion_tokens"] for r in log),
+    }
+
+
 def summary_row(result: RunResult, ratios: Optional[Dict[str, float]] = None,
                 pod: Optional[float] = None, cheap: bool = False) -> dict:
     """`cheap` skips the metrics that recompute paths per planned task (needed at large scale)."""
@@ -201,4 +221,5 @@ def summary_row(result: RunResult, ratios: Optional[Dict[str, float]] = None,
         "static_travel": static_travel,
         "congestion_excess": result.J - result.push_cost - result.fee_total - static_travel if full else nan,
         "hr": ratios.get("hr", nan), "hr_av": ratios.get("hr_av", nan), "pod": pod if pod is not None else nan,
+        "forecaster": cfg.forecaster, **forecast_columns(result.forecast_log),
     }

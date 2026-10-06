@@ -8,7 +8,8 @@ from src.doi.kinds import KINDS
 _LIGHTEST = min(k.weight for k in KINDS.values() if k.slots)      # lightest kind a robot can carry
 
 POLICIES = frozenset({"never", "myopic", "eager", "rof", "rof_local", "rof_f", "central", "hindsight", "free",
-                      "rof_r", "rof_p"})
+                      "rof_r", "rof_p", "rof_a"})
+FORECASTERS = ("numeric", "keyword", "oracle", "inverted")
 
 
 @dataclass
@@ -37,6 +38,8 @@ class SimConfig:
     theta: float = 1.0
     bundle_max: int = 1
     lam: float = 0.5
+    forecaster: str = "numeric"          # rof_a: numeric | keyword | oracle | inverted | llm:<model key>
+    agent_max_forecasts: int = 200       # rof_a: forecasts one run may request; later requests get no answer
     intake: str = "none"
     intake_cache: str = "experiments/results/doi/intake_cache"
     tick_seconds: float = 0.5
@@ -66,6 +69,9 @@ class SimConfig:
             (self.policy in POLICIES, f"unknown policy {self.policy!r}"),
             (self.bundle_max in (1, 2), "bundle_max must be 1 or 2"),
             (0 < self.lam <= 1, "lam must be in (0, 1]"),
+            (self.forecaster in FORECASTERS or self.forecaster.startswith("llm:"),
+             f"bad forecaster {self.forecaster!r}"),
+            (self.agent_max_forecasts >= 0, "agent_max_forecasts must be >= 0"),
             (self.intake in ("none", "oracle") or self.intake.startswith("llm:"),
              f"bad intake {self.intake!r}"),
             (0 <= self.p_wrong_class <= 1, "p_wrong_class must be in [0, 1]"),

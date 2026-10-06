@@ -259,6 +259,7 @@ Every arm runs on the **same map and same tasks**, so the only difference is the
 | `rof_f` | The same, but it forecasts the saving over the tasks still to come |
 | `rof_r` | Rent-or-Fill with a random threshold between 0 and 1 times the price (expected ratio e/(e-1)) |
 | `rof_p` | Rent-or-Fill that lowers its threshold when its forecast says the push will pay, and raises it when not |
+| `rof_a` | Rent-or-Fill guarded: a forecaster says whether the move will pay; the threshold is lowered on a yes, raised on a no, and stays at the price while there is no answer |
 | `central` | The same rule with one omniscient ledger and map (what a boss would do) |
 | `free` | Benchmark: every obstacle gone at tick 0, for free |
 | `hindsight` | Benchmark: knows all tasks, removes the best obstacles at tick 0, charged the lowest possible price |

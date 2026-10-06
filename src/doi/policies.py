@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any, FrozenSet, List, Optional, Tuple
 from src.doi.belief import CLASS_CODE, BeliefState
 from src.doi.config import SimConfig
 from src.doi.crdt import RentRecord
+from src.doi.forecast.case import build_case, plan_key
+from src.doi.forecast.forecasters import make_forecaster
 from src.doi.oracle import hindsight
 from src.doi.pushplan import BundlePlan, PushPlan
 from src.doi.rng import u01
@@ -38,6 +40,8 @@ class Shared:
     engine: Any = None
     global_belief: Any = None
     agents: List[Any] = field(default_factory=list)
+    forecast_log: List[dict] = field(default_factory=list)       # one row per forecast a robot requested
+    forecast_cases: List[Any] = field(default_factory=list)      # the ForecastCase of each answered request
 
 
 class PushPolicy:
@@ -53,6 +57,9 @@ class PushPolicy:
         if self.records_traffic:
             rec = RentRecord(agent.id, info.task_idx, info.start, info.goal, t, info.rent)
             record_traffic(agent.belief, rec, agent.cfg)
+
+    def on_tick(self, agents, t: int) -> None:
+        """Called once per tick before the robots decide. Most arms have nothing to do."""
 
     def assess(self, agent: "RobotAgent", plan: PushPlan, info: "TaskPlanInfo") -> Optional[Tuple[float, float, float]]:
         """None to reject the plan, else (score, saving, price); the robot takes the plan with the best score."""
@@ -172,6 +179,75 @@ class PredictedPolicy(LedgerPolicy):
         return known - price, known, price
 
 
+@dataclass
+class ForecastState:
+    asked: int                  # tick the forecast was requested
+    due: int                    # tick from which the answer is visible to the guard
+    answer: Optional[bool]      # None: failed or skipped, so the classical threshold stays
+
+
+class GuardedPolicy(PredictedPolicy):
+    """rof_a: a forecaster says whether the action will pay; the predicted-threshold rule guards the answer.
+
+    The threshold is lam on a yes, 1 / lam on a no, and 1 while there is no visible answer (Proposition 5).
+    A forecast is requested once per robot and plan, and only when the known saving reaches lam * price: below
+    that neither threshold can fire, so the answer could not matter."""
+
+    def __init__(self, lam: float, forecaster=None) -> None:
+        super().__init__(lam)
+        self.name = "rof_a"
+        self._given = forecaster
+
+    def prepare(self, scenario: "Scenario", cfg: SimConfig, shared: Shared) -> None:
+        super().prepare(scenario, cfg, shared)
+        self.scenario = scenario
+        self.forecaster = self._given or make_forecaster(cfg.forecaster)
+        self.requests = 0
+
+    def on_tick(self, agents, t: int) -> None:
+        for a in agents:                 # an answer that lands now is a reason to look at the plans again
+            if any(st.due == t and st.asked < t and st.answer is not None for st in a.forecasts.values()):
+                a.forecast_epoch += 1
+
+    def _request(self, agent, plan, key, t: int, price: float, known: float) -> ForecastState:
+        row = {"tick": t, "robot": agent.id, "plan_key": key, "forecaster": self.forecaster.name,
+               "known": float(known), "price": float(price)}
+        if self.requests >= self.cfg.agent_max_forecasts:
+            state = ForecastState(t, t, None)
+            row.update(case_id="", answer=None, truth=None, numeric_forecast=None, confidence=None, failed="",
+                       skipped=True, due=t, calls=0, tool_calls=0, latency_s=0.0, prompt_tokens=0,
+                       completion_tokens=0, reason="")
+        else:
+            self.requests += 1
+            case = build_case(agent, plan, t, price, known, self.scenario, self.shared.engine)
+            res = self.forecaster.forecast(case)
+            due = t if res.latency_s <= 0 else t + max(1, math.ceil(res.latency_s / self.cfg.tick_seconds))
+            state = ForecastState(t, due, res.answer)
+            self.shared.forecast_cases.append(case)
+            row.update(case_id=case.case_id, answer=res.answer, truth=case.truth,
+                       numeric_forecast=case.numeric_forecast, confidence=res.confidence, failed=res.failed,
+                       skipped=False, due=due, calls=res.calls, tool_calls=res.tool_calls, latency_s=res.latency_s,
+                       prompt_tokens=res.prompt_tokens, completion_tokens=res.completion_tokens, reason=res.reason)
+        self.shared.forecast_log.append(row)
+        return state
+
+    def assess(self, agent, plan, info):
+        price = price_of(plan, info)
+        known = self.saving(agent, plan)
+        if known <= 0:
+            return None
+        key = plan_key(plan)
+        state = agent.forecasts.get(key)
+        if state is None and price > 0 and self.lam < 1 and known >= self.lam * price:
+            state = agent.forecasts[key] = self._request(agent, plan, key, info.tick, price, known)
+        thr = 1.0
+        if state is not None and state.answer is not None and info.tick >= state.due:
+            thr = self.lam if state.answer else 1.0 / self.lam
+        if known < thr * price:
+            return None
+        return known - price, known, price
+
+
 class CentralPolicy(LedgerPolicy):
     """Omniscient arm: one global ledger and the true map, refreshed every tick; robots still push on their own routes."""
 
@@ -256,6 +332,8 @@ def make_policy(cfg: SimConfig) -> PushPolicy:
         return RandomizedPolicy(theta=cfg.theta)
     if name == "rof_p":
         return PredictedPolicy(lam=cfg.lam)
+    if name == "rof_a":
+        return GuardedPolicy(lam=cfg.lam)
     if name == "central":
         return CentralPolicy(theta=cfg.theta)
     if name == "hindsight":
