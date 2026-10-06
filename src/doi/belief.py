@@ -4,7 +4,8 @@ A cell's state is never "removed for good": obstacles move, so blocked and free 
 max, and the kind of obstacle on a cell is another max register (tick-encoded)."""
 from typing import Any, Dict, FrozenSet, Optional, Tuple
 
-from src.doi.crdt import AggRecordSet, Clock, GSet, MaxRegisterMap, ObstructionRecord, ObstructionSet, RecordSet, RentRecord
+from src.doi.crdt import (AggRecordSet, Clock, GSet, MaxRegisterMap, NoticeRecord, NoticeSet, ObstructionRecord,
+                          ObstructionSet, RecordSet, RentRecord)
 from src.doi.kinds import code, name_of
 
 Pos = Tuple[int, int]
@@ -27,6 +28,7 @@ class BeliefState:
         self.kind = MaxRegisterMap(-1)
         self.obstructions = ObstructionSet()
         self.slots_full = GSet()            # slots known to hold an obstacle; a slot is never emptied
+        self.notices = NoticeSet()          # text notices about future traffic; read only by forecasters
         for cell, kind in initial_obstacles.items():       # obstacles on the map at tick 0 are known to everyone
             self.blocked_tick.raise_to(cell, 0)
             self.cls.raise_to(cell, CLASS_CODE["robot_clearable"])
@@ -40,7 +42,7 @@ class BeliefState:
         return self.clock.n
 
     _COMPONENTS = ("records", "agg", "census", "report_tick", "blocked_tick", "free_tick", "cls", "kind",
-                   "obstructions", "slots_full")
+                   "obstructions", "slots_full", "notices")
 
     def add_record(self, rec: RentRecord) -> None:
         self.records.add(rec)
@@ -57,6 +59,9 @@ class BeliefState:
             self.report_tick.raise_to(cell, t)
             self.cls.raise_to(cell, CLASS_CODE[rec.cls])
             self.kind.raise_to(cell, t * KIND_SLOTS + code(rec.kind))
+
+    def add_notice(self, rec: NoticeRecord) -> None:
+        self.notices.add(rec)
 
     def observe_cell(self, cell: Pos, blocked: bool, t: int, kind: Optional[str] = None) -> None:
         (self.blocked_tick if blocked else self.free_tick).raise_to(cell, t)

@@ -278,3 +278,53 @@ class ObstructionSet(_Versioned):
 
     def canonical(self) -> Any:
         return frozenset(self._d.items())
+
+
+@dataclass(frozen=True)
+class NoticeRecord:
+    notice_id: str
+    tick: int                 # tick the notice was issued
+    text: str
+
+
+class NoticeSet(_Versioned):
+    """Grow-only set of notices keyed by id. On a clash the smaller (tick, text) wins, so merges commute."""
+
+    def __init__(self) -> None:
+        self._init_versions()
+        self._d: Dict[str, NoticeRecord] = {}
+
+    def add(self, rec: NoticeRecord) -> None:
+        old = self._d.get(rec.notice_id)
+        if old is None or (rec.tick, rec.text) < (old.tick, old.text):
+            self._d[rec.notice_id] = rec
+            self._bump(rec.notice_id)
+
+    def get(self, notice_id: str) -> Optional[NoticeRecord]:
+        return self._d.get(notice_id)
+
+    def records(self) -> List[NoticeRecord]:
+        return [self._d[k] for k in sorted(self._d)]
+
+    def merge(self, other: "NoticeSet") -> bool:
+        before = dict(self._d)
+        for rec in other._d.values():
+            self.add(rec)
+        return self._d != before
+
+    def units(self) -> int:
+        return len(self._d)
+
+    def copy(self) -> "NoticeSet":
+        out = NoticeSet()
+        out._d = dict(self._d)
+        self._copy_versions_to(out)
+        return out
+
+    def delta(self, v: int) -> "NoticeSet":
+        out = NoticeSet()
+        out._d = {k: r for k, r in self._d.items() if self._newer(k, v)}
+        return out
+
+    def canonical(self) -> Any:
+        return frozenset(self._d.items())
