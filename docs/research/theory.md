@@ -94,6 +94,34 @@ with both pallets in place, opening one doorway saves no vertical travel for tra
 `test_single_step_arms_never_push_on_complements`, `test_two_step_plans_push_on_complements`,
 `test_g1_two_step_plan_reaches_the_optimum`.)
 
+## Proposition 5 (the guard with late or missing answers)
+
+The forecast of Theorem 3 need not be available at once. Let `r` be the first request with `K_r > 0` and
+`K_r >= lambda c` (the forecast is requested there) and let the answer become visible at request `a >= r`
+(`a` infinite: no answer). The threshold is `theta_i = 1` for `i < a`, and for `i >= a` it is `lambda` on a yes
+and `1 / lambda` on a no. In the single-candidate setting:
+
+* robustness, whatever the answer and whenever it arrives: `ALG <= (1 + 1 / (lambda rho)) OPT_a`;
+* consistency, if the answer is right and views are full: `ALG <= (1 + min(1, lambda + W / c)) OPT_a` on a yes,
+  where `W = S_{a-1} - S_{r-1}` is the saving that passed while waiting, and `ALG = OPT_a` on a no;
+* no answer: the classical rule, `ALG <= (1 + 1 / rho) OPT_a`.
+
+*Proof of robustness.* Suppose the rule fires at `i`. If `i = 0` then `ALG = c` and `OPT_a >= min(c, K_0) >=
+lambda c`. Otherwise the rent is `S_{i-1}`, and because the rule did not fire at `i - 1`,
+`S_{i-1} <= K_{i-1} / rho < theta_{i-1} c / rho` (or `S_{i-1} = 0`). (1) `theta_i = 1 / lambda`: `K_i >= c`, so
+`OPT_a = c`, and `theta_{i-1} <= 1 / lambda` gives rent below `c / (lambda rho)`. (2) `theta_i = 1`: `OPT_a = c`
+and `theta_{i-1} = 1`, rent below `c / rho`. (3) `theta_i = theta_{i-1} = lambda`: rent below `lambda c / rho`
+and `OPT_a >= lambda c`, ratio below `1 / rho + 1 / lambda`. (4) `theta_i = lambda`, `theta_{i-1} = 1`: if
+`S_{i-1} >= c` then `OPT_a = c` and the ratio is below `1 + 1 / rho`; if `S_{i-1} < c` then
+`OPT_a >= max(S_{i-1}, lambda c)` and `ALG / OPT_a <= 1 + 1 / lambda`. Each is at most `1 + 1 / (lambda rho)`,
+since `rho <= 1` and `(1 - 1 / lambda)(1 - 1 / rho) >= 0`. If the rule never fires, `ALG = S_{T-1}`; either
+`S_{T-1} <= c` and the ratio is 1, or `OPT_a = c` and `S_{T-1} < c / (lambda rho)`. QED.
+
+*Proof of consistency.* With full views `K = S`. A right yes means `S_{T-1} >= c`; the rule fires at `a` at the
+latest, the rent is below `c` (the waiting threshold is 1) and at most `S_{a-1} = S_{r-1} + W < lambda c + W`. A
+right no means `S_{T-1} < c`; neither threshold 1 nor `1 / lambda` is reached, so `ALG = S_{T-1} = OPT_a`. QED.
+(Functions `run_guarded`, `guarded_wait`, `bound_guarded_consistency`; tests in `test_doi_abstract_guard.py`.)
+
 ## Benchmarks
 
 * `exact_opt`: the optimum of the abstract problem over all push schedules (layered Dijkstra over reachable
@@ -111,3 +139,5 @@ with both pallets in place, opening one doorway saves no vertical travel for tra
   (`test_multi_candidate_counterexample_on_g1`).
 * No claim of novelty for Theorems 1 to 3 until the prior-art reads in `prior-art-verification.md` are done.
   The coverage form and its use as the measure of decentralisation are the parts to check first.
+* No claim of novelty for Proposition 5 until learning-augmented ski rental with delayed predictions has been
+  checked in the literature.

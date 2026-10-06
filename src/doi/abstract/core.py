@@ -129,6 +129,57 @@ def bound_predicted(lam: float, rho: float) -> float:
     return 1.0 + 1.0 / (lam * rho)
 
 
+def _request_index(K: Sequence[float], c: float, lam: float) -> Optional[int]:
+    """First request at which the known evidence reaches lam * c: the forecast is asked for there."""
+    for i, k in enumerate(K):
+        if k > 0 and k >= lam * c:
+            return i
+    return None
+
+
+def run_guarded(s: Sequence[float], c: float, views: Sequence[AbstractSet[int]], lam: float,
+                says_yes: Optional[bool], delay: int = 0) -> SingleOutcome:
+    """Predicted-threshold rule whose forecast is asked for lazily and may arrive late or never.
+
+    The forecast is requested at the first request r with K_r > 0 and K_r >= lam * c, and is visible from request
+    r + delay. Before that, and always when says_yes is None, the threshold is 1 (the classical rule). After it the
+    threshold is lam on a yes and 1 / lam on a no."""
+    if not 0 < lam <= 1:
+        raise ValueError("lam must be in (0, 1]")
+    if delay < 0:
+        raise ValueError("delay must be >= 0")
+    _check(s, c, views)
+    S = prefix(s)
+    K = known(s, views)
+    opt = opt_single(s, c)
+    r = _request_index(K, c, lam)
+    for i in range(len(s)):
+        thr = 1.0
+        if says_yes is not None and r is not None and i >= r + delay:
+            thr = lam if says_yes else 1.0 / lam
+        if K[i] > 0 and K[i] >= thr * c:
+            return SingleOutcome(i, (S[i - 1] if i > 0 else 0.0) + c, opt)
+    return SingleOutcome(None, S[-1] if S else 0.0, opt)
+
+
+def guarded_wait(s: Sequence[float], c: float, views: Sequence[AbstractSet[int]], lam: float, delay: int) -> float:
+    """W: the saving that passes between the request for a forecast and its arrival (0.0 if never requested)."""
+    S = prefix(s)
+    r = _request_index(known(s, views), c, lam)
+    if r is None:
+        return 0.0
+    a = min(r + delay, len(s))
+
+    def before(i: int) -> float:
+        return S[i - 1] if i > 0 else 0.0
+
+    return before(a) - before(r)
+
+
+def bound_guarded_consistency(lam: float, w: float, c: float) -> float:
+    return 1.0 + min(1.0, lam + w / c)
+
+
 def views_full(T: int) -> List[FrozenSet[int]]:
     return [frozenset(range(i + 1)) for i in range(T)]
 
