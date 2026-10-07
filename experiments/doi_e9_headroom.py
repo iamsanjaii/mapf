@@ -60,10 +60,11 @@ def run_point(task) -> List[dict]:
 POINT = ["seed", "mode", "kappa", "fee"]
 
 
-def usable(df: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
-    """The runs of every point (seed, mode, cost setting) in which no arm stalled, and how many points were dropped."""
-    bad = df.groupby(POINT)["stalled"].transform("any").astype(bool)
-    return df[~bad], int(df[bad].groupby(POINT).ngroups)
+def usable(df: pd.DataFrame, point: List[str] = POINT) -> Tuple[pd.DataFrame, int]:
+    """The runs of every point (seed, mode, cost setting) in which no arm stalled, and how many points were dropped.
+    `point` names the columns that identify a point."""
+    bad = df.groupby(point)["stalled"].transform("any").astype(bool)
+    return df[~bad], int(df[bad].groupby(point).ngroups)
 
 
 def summarise(df: pd.DataFrame) -> pd.DataFrame:
