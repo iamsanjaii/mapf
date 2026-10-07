@@ -865,7 +865,7 @@ def test_hidden_fields_never_reach_a_prompt():
     run_agent(other, b)
     assert a.requests == b.requests
     text = json.dumps(a.requests)
-    assert "truth" not in text and "numeric_forecast" not in text and "robot" not in describe(CASE).lower()
+    assert "truth" not in text and "numeric_forecast" not in text and "tick" not in describe(CASE).lower()
     s, t = script(msg(yes())), script(msg(yes()))
     run_agent(CASE, s, "single")
     run_agent(other, t, "single")
@@ -1047,7 +1047,7 @@ def run_agent(case: ForecastCase, chat: Chat, mode: str = "tools") -> ForecastRe
 - [ ] **Step 4: Run the tests**
 
 Run: `venv/bin/python -m pytest tests/doi/test_doi_forecast_agent.py -q`
-Expected: `21 passed` (10 plain tests and 11 cases of the malformed-answer test).
+Expected: `23 passed` (12 plain tests and 11 cases of the malformed-answer test).
 
 - [ ] **Step 5: Run the whole suite and commit**
 
