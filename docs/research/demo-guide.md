@@ -75,6 +75,8 @@ Setup: `--sim`, `--demo`, `--scenario`, `--policy a,b,c` (arms compared on ident
 `--kind`, `--crossing`, `--strips`, `--pallets`, `--crates`, `--shelves`, `--map`, `--yes`. Language layer:
 `--intake none|oracle`, `--p-false`, `--p-report`, `--p-wrong-class`. Output: `--html`, `--gif`, `--gif-arms`,
 `--show`, `--no-show`, `--verbose`, `--replay`, `--no-benchmarks`.
+Forecast agent (arm `rof_a`): `--forecaster numeric|keyword|oracle|inverted|llm:<key>`, `--agent-mode tools|single`,
+`--agent-cache`, `--agent-live` (the only flag that spends money; without it stored model calls are replayed).
 Table columns: J total cost; HR_av times worse than hindsight on avoidable cost; PoD cost relative to the
 central arm; collateral detour caused by a parked obstacle.
 

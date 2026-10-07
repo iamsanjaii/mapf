@@ -4,7 +4,7 @@
 |---|---|---|
 | `human_notices.jsonl` | written by people | notice texts for the held-out `human` cases |
 
-`dev.jsonl`, `test.jsonl` and `human.jsonl` (forecast cases) are produced by a script in Part 2 of the build.
+`dev.jsonl`, `test.jsonl` and `human.jsonl` (forecast cases) are produced by `experiments/doi_agent_cases.py`. They are generated, not committed (about 10 MB for `test`); each line is `{"meta": {split, seed, mode, bank, stalled}, "case": {...}}`. `dev` (seeds 0..19) is for prompt development only; `test` (seeds 100..149) and `human` (seeds 300..319) are held-out. Seeds 200..229 belong to E9. Score them with `experiments/doi_agent_eval.py`. Without `human_notices.jsonl` the `human` split is skipped and level 2 is reported as not done.
 
 ## Protocol for `human_notices.jsonl`
 

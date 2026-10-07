@@ -1,7 +1,8 @@
 # Forecast agent with a rule as its guard: design
 
-Status: design approved in conversation by the owner on 2026-10-06; this written spec awaits the owner's review.
-No code has been written. The implementation plan is a separate document, written after this one is approved.
+Status: design approved by the owner on 2026-10-06. Part 1 (everything without a model) was built and measured on
+2026-10-07; Part 2 (the model parts: sections 8, 9, 12, 14.1 to 14.3) is built to
+`docs/superpowers/plans/2026-10-07-forecast-guard-part2.md`. No model call has been made.
 
 Target venue: IEEE T-ASE special issue "Agentic Intelligence for Materials Handling, Warehousing, and
 Logistics 5.0", submission deadline 2027-02-15.

@@ -224,7 +224,7 @@ A lossy, short-range broadcast channel. Messages can be dropped, delayed and onl
 
 ### `incidents.py`, `llm/` — The Language Layer
 
-For incident scenarios: reports are rendered as text, and an intake step turns the text into a structured record (`oracle` is a perfect stand-in; `llm/` can call a real model, offline and cached). The language model is never involved in planning, pushing or traffic.
+For incident scenarios: reports are rendered as text, and an intake step turns the text into a structured record (`oracle` is a perfect stand-in; `llm/` can call a real model, offline and cached). The language model is never involved in planning, pushing or traffic. It can now do one other thing: as the forecaster behind the arm `rof_a` it answers one yes/no question per candidate move ("will the fleet's saving reach the price?"), and the predicted-threshold rule guards the answer (a yes lowers the threshold, a no raises it, no answer leaves the classical rule). It can only read; every call is stored and replayed, and a run never calls a model unless `--agent-live` is given.
 
 ---
 
@@ -259,7 +259,7 @@ Every arm runs on the **same map and same tasks**, so the only difference is the
 | `rof_f` | The same, but it forecasts the saving over the tasks still to come |
 | `rof_r` | Rent-or-Fill with a random threshold between 0 and 1 times the price (expected ratio e/(e-1)) |
 | `rof_p` | Rent-or-Fill that lowers its threshold when its forecast says the push will pay, and raises it when not |
-| `rof_a` | Rent-or-Fill guarded: a forecaster says whether the move will pay; the threshold is lowered on a yes, raised on a no, and stays at the price while there is no answer |
+| `rof_a` | Rent-or-Fill guarded: a forecaster (`--forecaster numeric`, `keyword`, `oracle`, `inverted` or `llm:<key>`) says whether the move will pay; the threshold is lowered on a yes, raised on a no, and stays at the price while there is no answer |
 | `central` | The same rule with one omniscient ledger and map (what a boss would do) |
 | `free` | Benchmark: every obstacle gone at tick 0, for free |
 | `hindsight` | Benchmark: knows all tasks, removes the best obstacles at tick 0, charged the lowest possible price |
@@ -342,9 +342,15 @@ Every run records these (`--verbose` prints them):
 |---|---|
 | `doi_e2_information.py` | How much does limited sharing (range, loss, delay) cost? |
 | `doi_e7_intake.py` | What does turning text reports into records cost and risk? |
+| `doi_e9_headroom.py` | How much can any forecaster change fleet cost on `shift_notice`? (no model) |
+| `doi_agent_cases.py` | Collect forecast cases with their truth label into `data/forecasts/` (no model) |
+| `doi_agent_eval.py` | Score forecasters, models included, on those cases: accuracy, calibration, failures, cost |
+| `doi_e9_agent.py` | Does the forecast agent lower fleet cost, and what happens when its notices are wrong? |
 | `doi_e1_ratio.py` | E1: competitive ratio against the exact optimum in the abstract model (`experiments/doi_e1_ratio.py`) |
 
 Each has a `--quick` pilot mode, and `doi_common.py` is the shared grid runner. The experiments built on the earlier pit model (single-resource validity, complements, claims, shifting demand, warehouse scale, the approval gate) were removed with it; they will be re-expressed for pushing in a later stage.
+
+The three scripts that can reach a model (`doi_agent_eval.py`, `doi_e9_agent.py`, and `run_doi.py` with `--agent-live`) replay stored calls by default. A call that is not stored is an error; `--agent-live` lets it reach the model, and the two experiment scripts then print an upper bound on calls and tokens and ask before spending. Model keys come from `DOI_LLM_<KEY>_URL` and `DOI_LLM_<KEY>_MODEL`; the experiments use `small` and `large`, and one exported `OPENAI_API_KEY` serves both when their URL is `https://api.openai.com/...`.
 
 **Status:** no full experiment has been run on this model. Single runs are anecdotes.
 
@@ -444,7 +450,9 @@ MAPF/
 │   ├── spacetime.py                 # Collision-aware local planner
 │   │
 │   ├── incidents.py                 # Incident report text
-│   ├── llm/                         # Report intake (offline)
+│   ├── llm/                         # Report intake and the chat client; stored, replayable model calls
+│   ├── forecast/                    # Forecast cases, tools, the agent loop, the forecasters behind rof_a
+│   ├── notices.py                   # Text notices about future traffic (wording banks, delivery)
 │   │
 │   ├── oracle.py                    # Hindsight benchmark
 │   ├── metrics.py                   # RunResult + HR_av / PoD / collateral
@@ -458,7 +466,8 @@ MAPF/
 │
 ├── experiments/
 │   ├── doi_common.py                # Shared grid runner
-│   └── doi_e2 / doi_e7 *.py         # Information and intake experiments
+│   ├── doi_e2 / doi_e7 *.py         # Information and intake experiments
+│   └── doi_e9_*.py, doi_agent_*.py  # Forecast guard: headroom pilot, end-to-end, cases, scoring
 │
 ├── docs/research/
 │   ├── demo-guide.md                # How to present the demo
