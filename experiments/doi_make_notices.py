@@ -68,6 +68,21 @@ def clean(raw: str, kind: str, group: str) -> Optional[str]:
     return text if group.split()[0] in lower else None
 
 
+def missing_settings(keys: List[str]) -> List[str]:
+    """Environment variables the given model keys still need: URL and model name, and an API key for OpenAI."""
+    missing = []
+    for k in keys:
+        name = k.upper()
+        for part in ("URL", "MODEL"):
+            if not os.environ.get(f"DOI_LLM_{name}_{part}"):
+                missing.append(f"DOI_LLM_{name}_{part}")
+        url = os.environ.get(f"DOI_LLM_{name}_URL", "")
+        if url.startswith("https://api.openai.com/") and not (os.environ.get(f"DOI_LLM_{name}_API_KEY")
+                                                              or os.environ.get("OPENAI_API_KEY")):
+            missing.append("OPENAI_API_KEY")
+    return list(dict.fromkeys(missing))                      # each name once, in order
+
+
 def main(argv=None, clients: Optional[Dict[str, object]] = None, confirm=input) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--models", default="small,large", help="model keys, used in turn")
@@ -80,6 +95,18 @@ def main(argv=None, clients: Optional[Dict[str, object]] = None, confirm=input) 
         ap.error(f"{args.out} exists; use --force to overwrite it")
     keys = [k.strip() for k in args.models.split(",") if k.strip()]
     plan = make_plan(args.extra)
+    if clients is None:
+        missing = missing_settings(keys)
+        if missing:
+            ready = [k for k in keys if not missing_settings([k])]
+            first = next(k for k in keys if missing_settings([k])) if len(ready) < len(keys) else keys[0]
+            print(f"missing environment variables: {', '.join(missing)}\n"
+                  f"export them in this terminal first, for example:\n"
+                  f"  export DOI_LLM_{first.upper()}_URL=https://api.openai.com/v1 "
+                  f"DOI_LLM_{first.upper()}_MODEL=<model name>\n"
+                  + (f"or use only the model that is set up: --models {','.join(ready)}\n" if ready else ""),
+                  file=sys.stderr)
+            return 2
     if not confirm_calls(len(plan), 1, args.yes, confirm):
         print("aborted")
         return 1

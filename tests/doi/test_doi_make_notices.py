@@ -128,3 +128,18 @@ def test_clients_built_from_the_environment_never_use_json_mode(monkeypatch, tmp
     mod.main(["--yes", "--extra", "0.1", "--out", str(tmp_path / "n.jsonl")])
     assert len(bodies) == 10 and all("response_format" not in b for b in bodies)
     assert {b["model"] for b in bodies} == {"m"}
+
+
+def test_missing_model_settings_are_named_before_anything_is_asked(monkeypatch, tmp_path, capsys):
+    mod = _module()
+    for var in ("DOI_LLM_SMALL_URL", "DOI_LLM_SMALL_MODEL", "DOI_LLM_LARGE_URL", "DOI_LLM_LARGE_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DOI_LLM_SMALL_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("DOI_LLM_SMALL_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    asked = []
+    code = mod.main(["--out", str(tmp_path / "n.jsonl")], confirm=lambda prompt: asked.append(prompt) or "y")
+    err = capsys.readouterr().err
+    assert code == 2 and asked == []
+    assert "DOI_LLM_LARGE_URL" in err and "DOI_LLM_LARGE_MODEL" in err and "DOI_LLM_SMALL_URL" not in err
+    assert "export" in err and "--models small" in err                      # how to fix it, or to use one model only
