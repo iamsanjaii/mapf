@@ -9,3 +9,6 @@ experiments/results/doi/
 .env
 .env.*
 data/maps/
+data/forecasts/dev.jsonl
+data/forecasts/test.jsonl
+data/forecasts/human.jsonl
