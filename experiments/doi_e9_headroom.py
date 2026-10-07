@@ -4,13 +4,20 @@
 and `oracle`, bounds what a language model could add. Costs are compared as avoidable cost: J minus the cost of
 the `free` arm on the same seed, because most of J is travel no rule can avoid.
 
+A run that stalls is not a cost: its J is the censored cost of an unfinished run. Existing arms stall on this
+scenario at high fees (a pallet is pushed onto another robot's pending goal and the rule never clears it), so a
+stalled run is left out of every summary, together with the other arms on the same seed, mode and cost setting,
+which a paired comparison cannot do without. `runs.csv` keeps every run; the printed output says how many points
+were dropped.
+
 Usage: venv/bin/python experiments/doi_e9_headroom.py [--quick] [--seeds 100] [--jobs 4] [--out DIR]
+       venv/bin/python experiments/doi_e9_headroom.py --resummarise DIR    (recompute from DIR/runs.csv)
 """
 import argparse
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
-from typing import List
+from typing import List, Tuple
 
 import pandas as pd
 
@@ -50,11 +57,21 @@ def run_point(task) -> List[dict]:
     return rows
 
 
+POINT = ["seed", "mode", "kappa", "fee"]
+
+
+def usable(df: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
+    """The runs of every point (seed, mode, cost setting) in which no arm stalled, and how many points were dropped."""
+    bad = df.groupby(POINT)["stalled"].transform("any").astype(bool)
+    return df[~bad], int(df[bad].groupby(POINT).ngroups)
+
+
 def summarise(df: pd.DataFrame) -> pd.DataFrame:
     """Per cost setting and notice mode: paired differences in avoidable cost between arms, with a bootstrap
-    interval on the median, and the share of the numeric arm's avoidable cost a perfect forecast would remove."""
+    interval on the median, and the share of the numeric arm's avoidable cost a perfect forecast would remove.
+    Points in which any arm stalled are left out (see `usable`)."""
     out = []
-    for (kappa, fee, mode), g in df.groupby(["kappa", "fee", "mode"]):
+    for (kappa, fee, mode), g in usable(df)[0].groupby(["kappa", "fee", "mode"]):
         wide = g.pivot(index="seed", columns="arm", values="avoidable")
         headroom = float((wide["numeric"] - wide["oracle"]).mean() / max(1e-9, wide["numeric"].mean()))
         for a, b in COMPARE:
@@ -73,38 +90,46 @@ def main(argv=None) -> int:
     ap.add_argument("--seeds", type=int, default=100)
     ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--resummarise", metavar="DIR", default=None, help="recompute summary.csv from DIR/runs.csv")
     args = ap.parse_args(argv)
-    out = args.out or (DEFAULT_OUT + ("_quick" if args.quick else ""))
-    os.makedirs(out, exist_ok=True)
-    seeds = range(FIRST_SEED, FIRST_SEED + (3 if args.quick else args.seeds))
-    costs = COSTS[:1] if args.quick else COSTS
-    tasks = [(seed, mode, kappa, fee) for kappa, fee in costs for mode in MODES for seed in seeds]
-    if args.jobs > 1:
-        with ProcessPoolExecutor(max_workers=args.jobs) as pool:
-            batches = list(pool.map(run_point, tasks))
+    if args.resummarise:
+        out = args.resummarise
+        df = pd.read_csv(os.path.join(out, "runs.csv"), dtype={"mode": str})
     else:
-        batches = [run_point(t) for t in tasks]
-    df = pd.DataFrame([row for batch in batches for row in batch])
-    df.to_csv(os.path.join(out, "runs.csv"), index=False)
+        out = args.out or (DEFAULT_OUT + ("_quick" if args.quick else ""))
+        os.makedirs(out, exist_ok=True)
+        seeds = range(FIRST_SEED, FIRST_SEED + (3 if args.quick else args.seeds))
+        costs = COSTS[:1] if args.quick else COSTS
+        tasks = [(seed, mode, kappa, fee) for kappa, fee in costs for mode in MODES for seed in seeds]
+        if args.jobs > 1:
+            with ProcessPoolExecutor(max_workers=args.jobs) as pool:
+                batches = list(pool.map(run_point, tasks))
+        else:
+            batches = [run_point(t) for t in tasks]
+        df = pd.DataFrame([row for batch in batches for row in batch])
+        df.to_csv(os.path.join(out, "runs.csv"), index=False)
+    kept, dropped = usable(df)
     summary = summarise(df)
     summary.to_csv(os.path.join(out, "summary.csv"), index=False)
 
-    print(f"E9 headroom pilot: shift_notice, 8 robots, 20 tasks, lam 0.5, seeds {seeds[0]}..{seeds[-1]}; "
+    print(f"E9 headroom pilot: shift_notice, 8 robots, 20 tasks, lam 0.5, seeds {int(df.seed.min())}..{int(df.seed.max())}; "
           f"no model was called")
-    means = df.groupby(["kappa", "fee", "mode", "arm"])["avoidable"].mean().unstack("arm").round(1)
+    print(f"stalled runs are left out of every summary below, with the other arms of the same seed, mode and cost "
+          f"setting: dropped {dropped} of {df.groupby(POINT).ngroups} points")
+    means = kept.groupby(["kappa", "fee", "mode", "arm"])["avoidable"].mean().unstack("arm").round(1)
     print("\nmean avoidable cost (J minus the free arm's J):")
     print(means[[label for label, _, _ in ARMS]].to_string())
-    acc = df[df.arm.isin(["numeric", "keyword"])].groupby(["kappa", "fee", "mode", "arm"])["forecast_acc"].mean()
+    acc = kept[kept.arm.isin(["numeric", "keyword"])].groupby(["kappa", "fee", "mode", "arm"])["forecast_acc"].mean()
     print("\nmean forecast accuracy against the truth label:")
     print(acc.unstack("arm").round(2).to_string())
     print("\npaired differences in avoidable cost (median, 95% interval of the median, share of seeds above 0):")
     for _, r in summary.iterrows():
         print(f"  kappa {r.kappa:g} fee {r.fee:g} {r['mode']:8s} {r['compare']:20s} median {r.median_diff:7.1f} "
-              f"[{r.lo:7.1f}, {r.hi:7.1f}]  above 0: {r.share_positive:.2f}")
+              f"[{r.lo:7.1f}, {r.hi:7.1f}]  above 0: {r.share_positive:.2f}  n {int(r.n)}")
     top = summary[summary["compare"] == "numeric - oracle"][["kappa", "fee", "mode", "headroom_share"]]
     print("\nshare of the numeric arm's avoidable cost a perfect forecast removes:")
     print(top.round(3).to_string(index=False))
-    print(f"\nstalled runs: {int(df.stalled.sum())} of {len(df)}")
+    print(f"\nstalled runs (all of them, kept in runs.csv): {int(df.stalled.sum())} of {len(df)}")
     print(f"wrote {out}")
     return 0
 
