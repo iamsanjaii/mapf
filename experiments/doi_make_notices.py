@@ -86,6 +86,8 @@ def main(argv=None, clients: Optional[Dict[str, object]] = None, confirm=input) 
     if clients is None:
         from src.doi.llm.client import client_from_env
         clients = {k: client_from_env(k) for k in keys}
+        for client in clients.values():
+            client.json_mode = False        # plain prose: a DOI_LLM_<KEY>_JSON_MODE left over from intake would be refused
     rows, seen, failures = [], set(), 0
     for i, (kind, group) in enumerate(plan):
         client = clients[keys[i % len(keys)]]

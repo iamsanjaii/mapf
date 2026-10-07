@@ -99,3 +99,32 @@ def test_an_existing_file_is_not_overwritten_without_force(tmp_path):
         mod.main(["--yes", "--out", str(out)], clients=_clients())
     assert out.read_text() == "keep me\n"
     assert mod.main(["--yes", "--force", "--out", str(out)], clients=_clients()) == 0
+
+
+def test_clients_built_from_the_environment_never_use_json_mode(monkeypatch, tmp_path):
+    """The texts are plain prose; a JSON_MODE left over from the intake work must not reach the request."""
+    mod = _module()
+    for key in ("SMALL", "LARGE"):
+        monkeypatch.setenv(f"DOI_LLM_{key}_URL", "https://api.openai.com/v1")
+        monkeypatch.setenv(f"DOI_LLM_{key}_MODEL", "m")
+        monkeypatch.setenv(f"DOI_LLM_{key}_JSON_MODE", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    bodies = []
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "All orders go to the south bays"}}]}).encode()
+
+    def fake_urlopen(req, timeout):
+        bodies.append(json.loads(req.data.decode()))
+        return Resp()
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    mod.main(["--yes", "--extra", "0.1", "--out", str(tmp_path / "n.jsonl")])
+    assert len(bodies) == 10 and all("response_format" not in b for b in bodies)
+    assert {b["model"] for b in bodies} == {"m"}
