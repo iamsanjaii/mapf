@@ -201,7 +201,7 @@ class GuardedPolicy(PredictedPolicy):
     def prepare(self, scenario: "Scenario", cfg: SimConfig, shared: Shared) -> None:
         super().prepare(scenario, cfg, shared)
         self.scenario = scenario
-        self.forecaster = self._given or make_forecaster(cfg.forecaster)
+        self.forecaster = self._given or make_forecaster(cfg.forecaster, cfg)
         self.requests = 0
 
     def on_tick(self, agents, t: int) -> None:

@@ -5,11 +5,17 @@
   oracle    the truth label (the best a forecaster can be)
   inverted  the opposite of the truth (the worst)
 """
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
+from src.doi.forecast.agent import PROMPT_VERSION, run_agent
 from src.doi.forecast.case import ForecastCase
 from src.doi.forecast.result import ForecastResult
+from src.doi.llm.chatcache import CachedChat
+from src.doi.llm.client import Chat
 from src.doi.notices import DROP_CUES, SURGE_CUES
+
+if TYPE_CHECKING:
+    from src.doi.config import SimConfig
 
 
 def plain(answer: bool) -> ForecastResult:
@@ -71,13 +77,35 @@ class KeywordForecaster:
         return plain(case.numeric_forecast)
 
 
+class LlmForecaster:
+    """A language model behind the agent loop. `chat` is a CachedChat in a run, a fake in a test."""
+
+    def __init__(self, model_key: str, chat: Chat, mode: str = "tools") -> None:
+        self.name = f"llm:{model_key}"
+        self.chat = chat
+        self.mode = mode
+
+    def forecast(self, case: ForecastCase) -> ForecastResult:
+        return run_agent(case, self.chat, self.mode)
+
+
 FORECASTERS = {"numeric": NumericForecaster, "keyword": KeywordForecaster, "oracle": OracleForecaster,
                "inverted": InvertedForecaster}
 
 
-def make_forecaster(name: str):
+def make_forecaster(name: str, cfg: "Optional[SimConfig]" = None):
+    """A forecaster by name. `llm:<key>` needs the run's config: it says where the store is, whether a miss may
+    call the model, and the agent mode. Replay needs no credentials; only a live cache builds the real client."""
     if name.startswith("llm:"):
-        raise ValueError("llm forecasters are not built yet (Part 2 of the forecast-guard plan)")
+        if cfg is None:
+            raise ValueError(f"the llm forecaster {name!r} needs the run's SimConfig (store, mode, live)")
+        key = name.split(":", 1)[1]
+        client = None
+        if cfg.agent_live:
+            from src.doi.llm.client import client_from_env
+            client = client_from_env(key)
+        return LlmForecaster(key, CachedChat(client, cfg.agent_cache, key, cfg.agent_live, PROMPT_VERSION),
+                             cfg.agent_mode)
     if name not in FORECASTERS:
-        raise ValueError(f"unknown forecaster {name!r}: choose from {', '.join(sorted(FORECASTERS))}")
+        raise ValueError(f"unknown forecaster {name!r}: choose from {', '.join(sorted(FORECASTERS))} or llm:<key>")
     return FORECASTERS[name]()

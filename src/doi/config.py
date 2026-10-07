@@ -10,6 +10,7 @@ _LIGHTEST = min(k.weight for k in KINDS.values() if k.slots)      # lightest kin
 POLICIES = frozenset({"never", "myopic", "eager", "rof", "rof_local", "rof_f", "central", "hindsight", "free",
                       "rof_r", "rof_p", "rof_a"})
 FORECASTERS = ("numeric", "keyword", "oracle", "inverted")
+AGENT_MODES = ("tools", "single")
 
 
 @dataclass
@@ -40,6 +41,9 @@ class SimConfig:
     lam: float = 0.5
     forecaster: str = "numeric"          # rof_a: numeric | keyword | oracle | inverted | llm:<model key>
     agent_max_forecasts: int = 200       # rof_a: forecasts one run may request; later requests get no answer
+    agent_mode: str = "tools"            # rof_a with an llm forecaster: tools | single
+    agent_cache: str = "experiments/results/doi/agent_cache"     # where model calls are stored and replayed from
+    agent_live: bool = False             # allow a miss to call the model (spends money); off: a miss is an error
     intake: str = "none"
     intake_cache: str = "experiments/results/doi/intake_cache"
     tick_seconds: float = 0.5
@@ -72,6 +76,7 @@ class SimConfig:
             (self.forecaster in FORECASTERS or self.forecaster.startswith("llm:"),
              f"bad forecaster {self.forecaster!r}"),
             (self.agent_max_forecasts >= 0, "agent_max_forecasts must be >= 0"),
+            (self.agent_mode in AGENT_MODES, f"bad agent_mode {self.agent_mode!r}: choose tools or single"),
             (self.intake in ("none", "oracle") or self.intake.startswith("llm:"),
              f"bad intake {self.intake!r}"),
             (0 <= self.p_wrong_class <= 1, "p_wrong_class must be in [0, 1]"),
