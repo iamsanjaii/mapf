@@ -143,3 +143,18 @@ def test_missing_model_settings_are_named_before_anything_is_asked(monkeypatch, 
     assert code == 2 and asked == []
     assert "DOI_LLM_LARGE_URL" in err and "DOI_LLM_LARGE_MODEL" in err and "DOI_LLM_SMALL_URL" not in err
     assert "export" in err and "--models small" in err                      # how to fix it, or to use one model only
+
+
+def test_a_missing_api_key_alone_is_reported_as_the_key(monkeypatch, tmp_path, capsys):
+    mod = _module()
+    for key in ("SMALL", "LARGE"):
+        monkeypatch.setenv(f"DOI_LLM_{key}_URL", "https://api.openai.com/v1")
+        monkeypatch.setenv(f"DOI_LLM_{key}_MODEL", "m")
+        monkeypatch.delenv(f"DOI_LLM_{key}_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    asked = []
+    code = mod.main(["--out", str(tmp_path / "n.jsonl")], confirm=lambda prompt: asked.append(prompt) or "y")
+    err = capsys.readouterr().err
+    assert code == 2 and asked == []
+    assert "missing environment variables: OPENAI_API_KEY" in err and "export OPENAI_API_KEY=<your key>" in err
+    assert "DOI_LLM_SMALL_URL" not in err and "--models" not in err        # the URL and model are fine: say nothing of them

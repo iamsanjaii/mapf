@@ -83,6 +83,25 @@ def missing_settings(keys: List[str]) -> List[str]:
     return list(dict.fromkeys(missing))                      # each name once, in order
 
 
+def explain_missing(keys: List[str], missing: List[str]) -> str:
+    """What to do about the missing variables, naming only the gap that is really there."""
+    lines = [f"missing environment variables: {', '.join(missing)}"]
+    settings = [m for m in missing if m != "OPENAI_API_KEY"]
+    if settings:
+        ready = [k for k in keys if not [m for m in missing_settings([k]) if m != "OPENAI_API_KEY"]]
+        first = next(k for k in keys if [m for m in missing_settings([k]) if m != "OPENAI_API_KEY"])
+        lines += ["export them in this terminal first, for example:",
+                  f"  export DOI_LLM_{first.upper()}_URL=https://api.openai.com/v1 "
+                  f"DOI_LLM_{first.upper()}_MODEL=<model name>"]
+        if ready:
+            lines.append(f"or use only the model that is set up: --models {','.join(ready)}")
+    if "OPENAI_API_KEY" in missing:
+        lines += ["the OpenAI key is not set in this terminal: type  export OPENAI_API_KEY=<your key>  here "
+                  "(not in chat, not in a file in the repo), or fix the line that sets it in ~/.zshrc and open "
+                  "a new terminal"]
+    return "\n".join(lines)
+
+
 def main(argv=None, clients: Optional[Dict[str, object]] = None, confirm=input) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--models", default="small,large", help="model keys, used in turn")
@@ -98,14 +117,7 @@ def main(argv=None, clients: Optional[Dict[str, object]] = None, confirm=input) 
     if clients is None:
         missing = missing_settings(keys)
         if missing:
-            ready = [k for k in keys if not missing_settings([k])]
-            first = next(k for k in keys if missing_settings([k])) if len(ready) < len(keys) else keys[0]
-            print(f"missing environment variables: {', '.join(missing)}\n"
-                  f"export them in this terminal first, for example:\n"
-                  f"  export DOI_LLM_{first.upper()}_URL=https://api.openai.com/v1 "
-                  f"DOI_LLM_{first.upper()}_MODEL=<model name>\n"
-                  + (f"or use only the model that is set up: --models {','.join(ready)}\n" if ready else ""),
-                  file=sys.stderr)
+            print(explain_missing(keys, missing), file=sys.stderr)
             return 2
     if not confirm_calls(len(plan), 1, args.yes, confirm):
         print("aborted")
