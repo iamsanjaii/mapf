@@ -1,12 +1,10 @@
 """Score forecasters on a file of forecast cases (levels 1 to 3 of section 14.1 of the design).
 
-Accuracy, the two kinds of wrong answer, failures by code, calibration of the stated confidence, and what a forecast
-costs in calls, tokens and latency. The non-model forecasters are scored on the same cases as baselines. A model is
-scored from the store; a call that is not stored is an error unless --live, which asks before it spends.
+Accuracy, the two kinds of wrong answer, failures by code, calibration of the stated confidence, and the answer
+latency. Every forecaster is scored on the same cases.
 
 Usage: venv/bin/python experiments/doi_agent_eval.py --cases data/forecasts/test.jsonl
-           [--forecasters numeric,keyword,oracle,inverted,llm:small] [--agent-mode tools|single]
-           [--cache DIR] [--live] [--yes] [--quick] [--sample N] [--out DIR]
+           [--forecasters numeric,keyword,ledger,projected,oracle,inverted] [--quick] [--sample N] [--out DIR]
 """
 import argparse
 import json
@@ -23,15 +21,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from src.doi.config import SimConfig
-from src.doi.forecast.agent import MAX_TURNS
-from src.doi.forecast.budget import confirm_calls
 from src.doi.forecast.case import ForecastCase, case_from_dict
 from src.doi.forecast.forecasters import make_forecaster
-from src.doi.llm.chatcache import ReplayMiss
 
 DEFAULT_OUT = os.path.join(ROOT, "experiments", "results", "doi", "agent_eval")
 DEFAULT_FORECASTERS = "numeric,keyword,ledger,oracle,inverted"
-CODES = ("no_tool_call", "no_answer", "bad_answer", "client_error")
+CODES = ("no_answer", "bad_answer")
 
 
 def load_cases(path: str) -> List[Tuple[dict, ForecastCase]]:
@@ -75,12 +70,8 @@ def evaluate(name: str, forecaster, cases, tick_seconds: float) -> dict:
         "wrong_no_rate": _mean(1.0 if not r.answer and c.truth else 0.0 for r, c in scored),
         "failure_rate": sum(fails.values()) / n if n else float("nan"),
         "ece": ece([(r.confidence, ok) for (r, _), ok in zip(scored, right) if r.confidence is not None]),
-        "calls_per_forecast": _mean(r.calls for r in results),
-        "tool_calls_per_forecast": _mean(r.tool_calls for r in results),
         "latency_p50_s": p50, "latency_p95_s": p95,
         "latency_p50_ticks": p50 / tick_seconds, "latency_p95_ticks": p95 / tick_seconds,
-        "prompt_tokens_per_forecast": _mean(r.prompt_tokens for r in results),
-        "completion_tokens_per_forecast": _mean(r.completion_tokens for r in results),
     }
     for code in CODES:
         row[f"fail_{code}"] = fails[code]
@@ -88,15 +79,11 @@ def evaluate(name: str, forecaster, cases, tick_seconds: float) -> dict:
     return row
 
 
-def main(argv=None, confirm=input) -> int:
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cases", required=True)
     ap.add_argument("--forecasters", default=DEFAULT_FORECASTERS)
-    ap.add_argument("--agent-mode", choices=["tools", "single"], default="tools")
-    ap.add_argument("--cache", default=None, help="the model-call store (default: the SimConfig default)")
-    ap.add_argument("--live", action="store_true", help="let a call that is not stored reach the model")
-    ap.add_argument("--yes", action="store_true", help="skip the cost confirmation")
-    ap.add_argument("--quick", action="store_true", help="the first 20 cases; without --live, a model only if its store has calls")
+    ap.add_argument("--quick", action="store_true", help="the first 20 cases")
     ap.add_argument("--sample", type=int, default=0, help="N evenly spaced cases from the whole file (spread over "
                                                           "seeds and modes); overrides --quick's first 20")
     ap.add_argument("--out", default=DEFAULT_OUT)
@@ -108,30 +95,14 @@ def main(argv=None, confirm=input) -> int:
     elif args.quick:
         cases = cases[:20]
     names = [n.strip() for n in args.forecasters.split(",") if n.strip()]
-    cache = args.cache or SimConfig().agent_cache
-    if args.quick and not args.live:
-        names = [n for n in names if not n.startswith("llm:")
-                 or os.path.exists(os.path.join(cache, n.split(":", 1)[1], "chat.jsonl"))]
-    models = [n for n in names if n.startswith("llm:")]
-    if args.live and models:
-        per = MAX_TURNS if args.agent_mode == "tools" else 1
-        if not confirm_calls(len(cases) * len(models), per, args.yes, confirm):
-            print("aborted")
-            return 1
-    rows = []
-    for name in names:
-        cfg = SimConfig(forecaster=name, agent_mode=args.agent_mode, agent_cache=cache, agent_live=args.live)
-        try:
-            rows.append(evaluate(name, make_forecaster(name, cfg), cases, cfg.tick_seconds))
-        except ReplayMiss as miss:
-            print(f"error: {miss}", file=sys.stderr)
-            return 2
+    tick_seconds = SimConfig().tick_seconds
+    rows = [evaluate(name, make_forecaster(name), cases, tick_seconds) for name in names]
     os.makedirs(args.out, exist_ok=True)
     table = pd.DataFrame(rows)
     table.to_csv(os.path.join(args.out, "eval.csv"), index=False)
     shown = ["forecaster", "n", "answered", "truth_share", "accuracy", "wrong_yes_rate", "wrong_no_rate",
-             "failure_rate", "ece", "calls_per_forecast", "latency_p50_ticks"]
-    print(f"scored {len(cases)} cases from {args.cases}" + ("" if models else "; no model was called"))
+             "failure_rate", "ece", "latency_p50_ticks"]
+    print(f"scored {len(cases)} cases from {args.cases}")
     print(table[shown].round(3).to_string(index=False))
     for _, r in table.iterrows():
         if r["first_failure"]:

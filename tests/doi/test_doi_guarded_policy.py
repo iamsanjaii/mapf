@@ -24,7 +24,7 @@ class Scripted:
     name = "scripted"
 
     def __init__(self, answer, latency_s=0.0, failed=""):
-        self.result = ForecastResult(answer, None, "", failed, latency_s, 0, 0, 0, 0, "")
+        self.result = ForecastResult(answer, None, "", failed, latency_s)
         self.asked = 0
 
     def forecast(self, case):
@@ -57,7 +57,7 @@ def info(tick):
 def test_config_knows_the_arm_and_checks_the_forecaster():
     assert SimConfig(policy="rof_a").forecaster == "numeric" and SimConfig().agent_max_forecasts == 200
     assert make_policy(SimConfig(policy="rof_a")).name == "rof_a"
-    SimConfig(forecaster="llm:small")
+    SimConfig(forecaster="projected")
     with pytest.raises(ValueError):
         SimConfig(forecaster="crystal_ball")
     with pytest.raises(ValueError):
@@ -158,19 +158,13 @@ def test_a_scenario_with_no_zones_and_no_notices_still_runs():
 
 
 def test_forecast_columns():
-    log = [dict(answer=True, truth=True, failed="", skipped=False, calls=2, latency_s=1.5, prompt_tokens=10,
-                completion_tokens=3),
-           dict(answer=True, truth=False, failed="", skipped=False, calls=1, latency_s=0.5, prompt_tokens=5,
-                completion_tokens=1),
-           dict(answer=False, truth=True, failed="", skipped=False, calls=0, latency_s=0.0, prompt_tokens=0,
-                completion_tokens=0),
-           dict(answer=None, truth=True, failed="no_answer", skipped=False, calls=4, latency_s=2.0, prompt_tokens=8,
-                completion_tokens=0),
-           dict(answer=None, truth=None, failed="", skipped=True, calls=0, latency_s=0.0, prompt_tokens=0,
-                completion_tokens=0)]
+    log = [dict(answer=True, truth=True, failed="", skipped=False),
+           dict(answer=True, truth=False, failed="", skipped=False),
+           dict(answer=False, truth=True, failed="", skipped=False),
+           dict(answer=None, truth=True, failed="no_answer", skipped=False),
+           dict(answer=None, truth=None, failed="", skipped=True)]
     cols = forecast_columns(log)
     assert cols == {"forecasts": 5, "forecast_failed": 1, "forecast_skipped": 1, "forecast_acc": pytest.approx(1 / 3),
-                    "wrong_yes": 1, "wrong_no": 1, "agent_calls": 7, "agent_latency_s": 4.0,
-                    "agent_prompt_tokens": 23, "agent_completion_tokens": 4}
+                    "wrong_yes": 1, "wrong_no": 1}
     empty = forecast_columns([])
     assert empty["forecasts"] == 0 and math.isnan(empty["forecast_acc"])

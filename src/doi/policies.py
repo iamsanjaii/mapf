@@ -215,8 +215,7 @@ class GuardedPolicy(PredictedPolicy):
         if self.requests >= self.cfg.agent_max_forecasts:
             state = ForecastState(t, t, None)
             row.update(case_id="", answer=None, truth=None, numeric_forecast=None, confidence=None, failed="",
-                       skipped=True, due=t, calls=0, tool_calls=0, latency_s=0.0, prompt_tokens=0,
-                       completion_tokens=0, reason="")
+                       skipped=True, due=t, latency_s=0.0, reason="")
         else:
             self.requests += 1
             case = build_case(agent, plan, t, price, known, self.scenario, self.shared.engine)
@@ -226,8 +225,7 @@ class GuardedPolicy(PredictedPolicy):
             self.shared.forecast_cases.append(case)
             row.update(case_id=case.case_id, answer=res.answer, truth=case.truth,
                        numeric_forecast=case.numeric_forecast, confidence=res.confidence, failed=res.failed,
-                       skipped=False, due=due, calls=res.calls, tool_calls=res.tool_calls, latency_s=res.latency_s,
-                       prompt_tokens=res.prompt_tokens, completion_tokens=res.completion_tokens, reason=res.reason)
+                       skipped=False, due=due, latency_s=res.latency_s, reason=res.reason)
         self.shared.forecast_log.append(row)
         return state
 

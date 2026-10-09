@@ -27,7 +27,6 @@ from src.doi.animate import animate_runs
 from src.doi.metrics import collateral_cost, hindsight_ratios
 from src.doi.narrate import ARM_NOTES, COLUMN_NOTES, FLAG_GUIDE, SCENARIO_NOTES, events
 from src.doi.runner import run_episode
-from src.doi.llm.chatcache import ReplayMiss
 from src.doi.scenarios import DEFAULTS, build_scenario, scenario_from_ascii
 from src.doi.kinds import KINDS
 from src.doi.metrics import loaded_at, slots_full_at
@@ -66,9 +65,7 @@ def build(args):
         latency=args.latency, intake=args.intake, max_ticks=args.max_ticks,
         scenario_params=params, p_wrong_class=args.p_wrong_class, theta=args.theta,
         bundle_max=getattr(args, "bundle_max", 1), lam=getattr(args, "lam", 0.5),
-        forecaster=getattr(args, "forecaster", "numeric"), agent_mode=getattr(args, "agent_mode", "tools"),
-        agent_cache=getattr(args, "agent_cache", None) or SimConfig().agent_cache,
-        agent_live=getattr(args, "agent_live", False))
+        forecaster=getattr(args, "forecaster", "numeric"))
     if args.demo == "fleet":
         cfg = cfg.replace(scenario="multi_block_wall", n_robots=8, tasks_per_robot=10, seed=args.seed)
     if args.demo == "scatter":
@@ -311,13 +308,7 @@ def main(argv=None):
                     help="1: single pushes; 2: also two-step plans (two obstacles moved in sequence)")
     ap.add_argument("--lam", type=float, default=0.5, help="rof_p: threshold multiplier when the forecast says yes")
     ap.add_argument("--forecaster", default="numeric",
-                    help="rof_a: numeric | keyword | oracle | inverted | llm:<model key>")
-    ap.add_argument("--agent-mode", choices=["tools", "single"], default="tools",
-                    help="rof_a with an llm forecaster: tools (the model asks for what it needs) or single (one call)")
-    ap.add_argument("--agent-cache", default=None, metavar="DIR",
-                    help="where model calls are stored and replayed from (default experiments/results/doi/agent_cache)")
-    ap.add_argument("--agent-live", action="store_true",
-                    help="let a call that is not in the store reach the model (spends money; default: an error)")
+                    help="rof_a: numeric | keyword | ledger | projected | oracle | inverted")
     ap.add_argument("--intake", default="none", help="none | oracle   (family D scenarios)")
     ap.add_argument("--p-false", type=float, default=None)
     ap.add_argument("--p-report", type=float, default=None)
@@ -424,11 +415,7 @@ def main(argv=None):
                 names.append(extra)
     for name in names:
         t0 = time.time()
-        try:
-            runs[name] = run_episode(cfg.replace(policy=name), scenario=scenario)
-        except ReplayMiss as miss:
-            print(f"error: {miss}", file=sys.stderr)
-            return 2
+        runs[name] = run_episode(cfg.replace(policy=name), scenario=scenario)
         runs[name].wall_s = time.time() - t0
 
     if args.verbose:

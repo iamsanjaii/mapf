@@ -121,16 +121,10 @@ FLAG_GUIDE: List[Tuple[str, List[Tuple[str, str, str]]]] = [
          "With 2, a robot can plan two pushes in a row, which pays when two obstacles must both go (complements)."),
         ("--lam X", "rof_p only: threshold multiplier when the forecast says the push will pay (default 0.5).",
          "The multiplier is 1/X when the forecast says it will not; 1 makes rof_p behave like rof."),
-        ("--forecaster NAME", "rof_a only: who answers \"will this move pay?\": numeric, keyword, oracle, inverted "
-                              "or llm:<model key>.",
-         "oracle and inverted are the best and worst a forecaster can be; an llm forecaster reads the notices."),
-        ("--agent-mode tools|single", "rof_a with an llm forecaster: the model looks things up with tools (default) "
-                                      "or gets everything in one call.",
-         "single is the ablation that shows what the tools add."),
-        ("--agent-cache DIR", "Where model calls are stored and replayed from.",
-         "A run replays stored calls and makes none; a call that is not stored is an error."),
-        ("--agent-live", "Let a call that is not stored reach the model.",
-         "The only flag that spends money. Check the estimate the experiment scripts print first."),
+        ("--forecaster NAME", "rof_a only: who answers \"will this move pay?\": numeric, keyword, ledger, "
+                              "projected, oracle or inverted.",
+         "ledger says yes once the recorded saving exceeds a constant. oracle and inverted are the best and worst "
+         "a forecaster can be."),
     ]),
     ("INFORMATION (who knows what)", [
         ("--r-comm R", "How far a robot's ledger messages reach (0 = none, inf = everywhere).",
@@ -138,10 +132,10 @@ FLAG_GUIDE: List[Tuple[str, List[Tuple[str, str, str]]]] = [
         ("--loss P", "Chance each ledger message is dropped.", "Models a bad wireless link."),
         ("--latency L", "Ticks a ledger message takes to arrive.", "Stale information delays decisions."),
     ]),
-    ("LANGUAGE LAYER (incident scenarios)", [
+    ("INCIDENT REPORTS (incident scenarios)", [
         ("--intake none|oracle", "How incident reports reach the fleet.",
          "none: robots learn of an obstruction only by seeing it, and never push one whose class is unknown. "
-         "oracle: a perfect structured report arrives (the stand-in for a language model that reads the text)."),
+         "oracle: a perfect structured report arrives."),
         ("--p-false / --p-report", "How often a report is false / how often an incident gets reported at all.",
          "False reports cost detours until a robot sees the cell is clear."),
         ("--p-wrong-class", "Chance a report wrongly says 'robots can clear this'.",

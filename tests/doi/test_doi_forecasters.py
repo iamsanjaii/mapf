@@ -2,7 +2,7 @@ import dataclasses
 import pytest
 from src.doi.forecast.case import ForecastCase
 from src.doi.forecast.forecasters import (InvertedForecaster, KeywordForecaster, NumericForecaster, OracleForecaster,
-                                          group_word, make_forecaster)
+                                          ProjectedForecaster, group_word, make_forecaster)
 
 ZONES = {"west north bays": {"rows": (0, 6), "cols": (0, 9)}, "west south bays": {"rows": (8, 14), "cols": (0, 9)},
          "east north bays": {"rows": (0, 6), "cols": (11, 20)}, "east south bays": {"rows": (8, 14), "cols": (11, 20)}}
@@ -21,7 +21,7 @@ def test_plain_forecasters():
     assert OracleForecaster().forecast(case(truth=True)).answer is True
     assert InvertedForecaster().forecast(case(truth=True)).answer is False
     res = OracleForecaster().forecast(case())
-    assert (res.failed, res.latency_s, res.calls, res.confidence) == ("", 0.0, 0, None)
+    assert (res.failed, res.latency_s, res.confidence) == ("", 0.0, None)
     for cls in (OracleForecaster, InvertedForecaster):
         with pytest.raises(ValueError):
             cls().forecast(case(truth=None))
@@ -54,8 +54,6 @@ def test_keyword_puts_a_drop_before_a_surge_and_ignores_unknown_wording():
 def test_make_forecaster_names():
     for name in ("numeric", "keyword", "ledger", "oracle", "inverted"):
         assert make_forecaster(name).name == name
-    with pytest.raises(ValueError, match="llm"):
-        make_forecaster("llm:small")
     with pytest.raises(ValueError):
         make_forecaster("crystal_ball")
 
@@ -68,3 +66,11 @@ def test_ledger_forecaster_answers_from_the_recorded_saving_alone():
     high = dataclasses.replace(BASE, ledger={**BASE.ledger, "saving_on_recorded_trips": LEDGER_THRESHOLD + 0.5},
                                notices=(("n0", 1, "radio: picking is done in the north bays"),))
     assert f.forecast(low).answer is False and f.forecast(high).answer is True
+
+
+def test_projected_forecaster_is_the_recorded_rate_against_the_price_and_ignores_the_own_trip():
+    ledger = {"trips_recorded": 10.0, "trips_expected": 160.0, "saving_on_recorded_trips": 0.6,
+              "saving_on_my_current_trip": 143.0}
+    assert ProjectedForecaster().forecast(case(ledger=ledger, price=10.0)).answer is False     # 9.6 < 10
+    assert ProjectedForecaster().forecast(case(ledger=ledger, price=9.0)).answer is True       # 9.6 >= 9
+    assert make_forecaster("projected").name == "projected"

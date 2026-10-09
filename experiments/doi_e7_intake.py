@@ -1,4 +1,4 @@
-"""E7 (H7): exception intake in family D. Cost of none/oracle/llm intake, false reports, safety invariants."""
+"""E7 (H7): exception intake in family D. Cost of none and oracle intake, false reports, safety invariants."""
 import os
 import sys
 
@@ -11,20 +11,13 @@ from doi_common import (RESULTS_ROOT, make_parser, n_points, out_dir, paired_dif
 from src.doi.config import SimConfig
 
 ARMS = ["rof", "central", "never"]
-CACHE = os.path.join(RESULTS_ROOT, "intake_cache")
-
-
-def llm_available(model_key: str = "hosted") -> bool:
-    path = os.path.join(CACHE, model_key, "cache.jsonl")
-    return os.path.exists(path) and os.path.getsize(path) > 0
 
 
 def axes_for(quick: bool):
     if quick:
         return {"scenario": ["incidents_room", "incidents_aisles"], "intake": ["none", "oracle"],
                 "scenario_params.p_report": [0.9], "scenario_params.p_false": [0.0, 0.2]}
-    intakes = ["none", "oracle"] + (["llm:hosted"] if llm_available() else [])
-    return {"scenario": ["incidents_room", "incidents_aisles"], "intake": intakes,
+    return {"scenario": ["incidents_room", "incidents_aisles"], "intake": ["none", "oracle"],
             "scenario_params.p_report": [0.5, 0.9], "scenario_params.p_false": [0.0, 0.1, 0.2]}
 
 
@@ -34,9 +27,7 @@ def main(argv=None) -> None:
     out = out_dir(args, "e7")
     os.makedirs(out, exist_ok=True)
     seeds = seed_list(args, first=200)
-    if not args.quick and not llm_available():
-        print("NOTE: no cached llm:hosted intake results found; that arm is omitted (run doi_intake_run.py first).")
-    base = SimConfig(n_robots=12, tasks_per_robot=10, intake_cache=CACHE, p_wrong_class=0.0)
+    base = SimConfig(n_robots=12, tasks_per_robot=10, p_wrong_class=0.0)
     df, elapsed = timed_grid(base, axes, ARMS, seeds, out, args.jobs)
     if args.quick:
         full = {k: v for k, v in axes_for(False).items()}
@@ -66,7 +57,6 @@ def main(argv=None) -> None:
         a, b, m = paired_diff(rof, keys, rof["axis_intake"] == intake, rof["axis_intake"] == "oracle", "J_censored")
         if len(a):
             print(f"J({intake}) / J(oracle), paired by seed: median {np.median(a / b):.3f} over {len(a)} pairs")
-    print("H7b/H7c need the [pilot] thresholds of spec section 8 and the llm:hosted cache; not evaluated here.")
     fr = rof[rof.axis_intake == "oracle"].groupby("axis_scenario_params.p_false")["false_report_cost"].median()
     print("H7d false_report_cost by p_false (oracle intake): " + ", ".join(f"{k}: {v:.1f}" for k, v in fr.items()))
     print("intake_rejected total: " + str(int(df["intake_rejected"].sum())))

@@ -9,9 +9,4 @@ class ForecastResult:
     confidence: Optional[float]
     reason: str
     failed: str                     # "" on success, else a failure code
-    latency_s: float
-    calls: int
-    tool_calls: int
-    prompt_tokens: int
-    completion_tokens: int
-    model: str
+    latency_s: float                # seconds until the answer is visible; the guard keeps the classical rule till then

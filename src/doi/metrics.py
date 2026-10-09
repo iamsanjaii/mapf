@@ -173,10 +173,6 @@ def forecast_columns(log: List[dict]) -> dict:
         else float("nan"),
         "wrong_yes": sum(1 for r in scored if r["answer"] and not r["truth"]),
         "wrong_no": sum(1 for r in scored if not r["answer"] and r["truth"]),
-        "agent_calls": sum(r["calls"] for r in log),
-        "agent_latency_s": float(sum(r["latency_s"] for r in log)),
-        "agent_prompt_tokens": sum(r["prompt_tokens"] for r in log),
-        "agent_completion_tokens": sum(r["completion_tokens"] for r in log),
     }
 
 
