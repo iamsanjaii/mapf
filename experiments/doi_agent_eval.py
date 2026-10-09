@@ -6,7 +6,7 @@ scored from the store; a call that is not stored is an error unless --live, whic
 
 Usage: venv/bin/python experiments/doi_agent_eval.py --cases data/forecasts/test.jsonl
            [--forecasters numeric,keyword,oracle,inverted,llm:small] [--agent-mode tools|single]
-           [--cache DIR] [--live] [--yes] [--quick] [--out DIR]
+           [--cache DIR] [--live] [--yes] [--quick] [--sample N] [--out DIR]
 """
 import argparse
 import json
@@ -30,7 +30,7 @@ from src.doi.forecast.forecasters import make_forecaster
 from src.doi.llm.chatcache import ReplayMiss
 
 DEFAULT_OUT = os.path.join(ROOT, "experiments", "results", "doi", "agent_eval")
-DEFAULT_FORECASTERS = "numeric,keyword,oracle,inverted"
+DEFAULT_FORECASTERS = "numeric,keyword,ledger,oracle,inverted"
 CODES = ("no_tool_call", "no_answer", "bad_answer", "client_error")
 
 
@@ -84,6 +84,7 @@ def evaluate(name: str, forecaster, cases, tick_seconds: float) -> dict:
     }
     for code in CODES:
         row[f"fail_{code}"] = fails[code]
+    row["first_failure"] = next((f"{r.failed}: {r.reason}" for r in results if r.failed), "")
     return row
 
 
@@ -95,15 +96,20 @@ def main(argv=None, confirm=input) -> int:
     ap.add_argument("--cache", default=None, help="the model-call store (default: the SimConfig default)")
     ap.add_argument("--live", action="store_true", help="let a call that is not stored reach the model")
     ap.add_argument("--yes", action="store_true", help="skip the cost confirmation")
-    ap.add_argument("--quick", action="store_true", help="the first 20 cases; a model only if its store has calls")
+    ap.add_argument("--quick", action="store_true", help="the first 20 cases; without --live, a model only if its store has calls")
+    ap.add_argument("--sample", type=int, default=0, help="N evenly spaced cases from the whole file (spread over "
+                                                          "seeds and modes); overrides --quick's first 20")
     ap.add_argument("--out", default=DEFAULT_OUT)
     args = ap.parse_args(argv)
     cases = load_cases(args.cases)
-    if args.quick:
+    if args.sample > 0:
+        step = max(1, len(cases) // args.sample)
+        cases = cases[::step][:args.sample]
+    elif args.quick:
         cases = cases[:20]
     names = [n.strip() for n in args.forecasters.split(",") if n.strip()]
     cache = args.cache or SimConfig().agent_cache
-    if args.quick:
+    if args.quick and not args.live:
         names = [n for n in names if not n.startswith("llm:")
                  or os.path.exists(os.path.join(cache, n.split(":", 1)[1], "chat.jsonl"))]
     models = [n for n in names if n.startswith("llm:")]
@@ -127,6 +133,9 @@ def main(argv=None, confirm=input) -> int:
              "failure_rate", "ece", "calls_per_forecast", "latency_p50_ticks"]
     print(f"scored {len(cases)} cases from {args.cases}" + ("" if models else "; no model was called"))
     print(table[shown].round(3).to_string(index=False))
+    for _, r in table.iterrows():
+        if r["first_failure"]:
+            print(f"{r['forecaster']}: first failure was {r['first_failure']}")
     print(f"wrote {os.path.join(args.out, 'eval.csv')}")
     return 0
 

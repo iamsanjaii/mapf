@@ -21,7 +21,7 @@ def _module():
 
 
 BASE = ForecastCase(case_id="x", robot=0, tick=1, mode="push", kind="pallet", obstacle=(10, 10), landing=(10, 11),
-                    plan_key=(((10, 10), (0, 1), 1),), price=10.0, known_saving=6.0, notices=(), ledger={},
+                    plan_key=(((10, 10), (0, 1), 1),), price=10.0, known_saving=6.0, notices=(), ledger={"saving_on_recorded_trips": 0.0},
                     zones={"west north bays": {"rows": (0, 6), "cols": (0, 9)},
                            "west south bays": {"rows": (8, 14), "cols": (0, 9)}},
                     trip_saving={}, numeric_forecast=False, truth=True)
@@ -105,7 +105,7 @@ def test_quick_run_scores_the_baselines_and_writes_a_file(tmp_path):
     assert mod.main(["--quick", "--cases", str(tmp_path / "cases.jsonl"), "--out", str(out)]) == 0
     import pandas as pd
     table = pd.read_csv(out / "eval.csv")
-    assert list(table.forecaster) == ["numeric", "keyword", "oracle", "inverted"]
+    assert list(table.forecaster) == ["numeric", "keyword", "ledger", "oracle", "inverted"]
     assert table.set_index("forecaster").loc["oracle", "accuracy"] == 1.0
 
 
@@ -125,3 +125,22 @@ def test_live_scoring_asks_first_and_an_answer_of_no_stops_it(tmp_path, capsys, 
     code = mod.main(["--cases", str(tmp_path / "cases.jsonl"), "--out", str(tmp_path / "o"), "--forecasters",
                      "llm:small", "--cache", str(tmp_path / "store"), "--live"], confirm=lambda prompt: "n")
     assert code == 1 and "at most 16 model calls" in capsys.readouterr().out
+
+
+def test_quick_with_live_keeps_a_model_whose_store_is_empty(tmp_path, capsys, monkeypatch):
+    mod = _module()
+    _cases(tmp_path / "cases.jsonl")
+    monkeypatch.setattr("src.doi.llm.client.client_from_env",
+                        lambda key: (_ for _ in ()).throw(AssertionError("the client must not be built")))
+    code = mod.main(["--quick", "--cases", str(tmp_path / "cases.jsonl"), "--out", str(tmp_path / "o"),
+                     "--forecasters", "llm:small", "--cache", str(tmp_path / "store"), "--live"],
+                    confirm=lambda prompt: "n")
+    assert code == 1 and "at most 16 model calls" in capsys.readouterr().out
+
+
+def test_sample_takes_evenly_spaced_cases_from_the_whole_file(tmp_path):
+    mod = _module()
+    _cases(tmp_path / "cases.jsonl")
+    assert mod.main(["--sample", "2", "--cases", str(tmp_path / "cases.jsonl"), "--out", str(tmp_path / "o")]) == 0
+    import pandas as pd
+    assert list(pd.read_csv(tmp_path / "o" / "eval.csv").n) == [2, 2, 2, 2, 2]
