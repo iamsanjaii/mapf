@@ -746,9 +746,14 @@ for a model yet.
 
 ### Limits to know about
 
-* **Notices change nothing in E9.** For every arm the cost is identical with a true notice and with none, and
-  `keyword` equals `numeric`. Either notices rarely name the obstacle's region, or they are not reaching the
-  robots in time. This has not been checked yet, so do not read it as "notices never matter".
+* **Notices and the E9 costs.** Notices do reach the robots: in 40 traced runs every robot held both notices.
+  The costs are identical with and without a notice because no arm in the no-model E9 reads one (`keyword` uses
+  cue phrases from the `dev` wording and E9 uses the `test` wording, by design). So E9 says nothing yet about
+  the value of reading notices; only a model arm can. It does bound it: the best possible forecaster (`oracle`)
+  is within 4 of the `ledger` rule (3% to 6% of avoidable cost), so a perfect notice reader has little left to
+  win. The label counts every task, past and future, so the saving already recorded settles most of it, which is
+  why the one-line ledger rule is hard to beat. A naive reader (a drop notice means no, a surge means yes) is
+  right only 47% of the time on true notices, against 88% for the ledger rule.
 * **No human-written notice set exists.** `data/forecasts/llm_notices.jsonl` holds 124 texts written by
   `gpt-4o-mini` and `gpt-4o`. Anything scored on it is a model scored on model-written text, not the human set.
 * **Stalls.** At a high fee a pushed pallet can land on another robot's pending goal and the rule never clears it

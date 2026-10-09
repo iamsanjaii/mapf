@@ -413,7 +413,7 @@ The truth is "yes" in half of these cases, but the models answer "yes" in only a
 
 **Limits.**
 
-* In E9 the cost is identical with a true notice and with none, and `keyword` equals `numeric`. Either notices rarely name the obstacle's region or they do not reach the robots in time. This has not been checked yet.
+* Notices do reach the robots (in 40 traced runs every robot held both). The E9 costs are identical with and without a notice because no arm in the no-model E9 reads one: `keyword` uses cue phrases from the `dev` wording and E9 uses the `test` wording, by design. So E9 says nothing yet about the value of reading notices; only a model arm can. It does bound it: the best possible forecaster (`oracle`) is within 4 of the `ledger` rule (3% to 6% of avoidable cost). The label counts every task, past and future, so the saving already recorded settles most of it. A naive reader (a drop notice means no, a surge means yes) is right only 47% of the time on true notices, against 88% for the ledger rule.
 * There is no human-written notice set. `data/forecasts/llm_notices.jsonl` holds 124 texts written by `gpt-4o-mini` and `gpt-4o`; anything scored on it is a model scored on model-written text.
 * At a high fee a pushed pallet can land on another robot's pending goal and the rule never clears it (16 of 8,000 runs in an earlier pilot, none in the 8,000 above). Stalled points are left out of the summaries.
 
