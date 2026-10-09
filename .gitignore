@@ -12,3 +12,8 @@ data/maps/
 data/forecasts/dev.jsonl
 data/forecasts/test.jsonl
 data/forecasts/human.jsonl
+# working notes, not part of the project
+docs/superpowers/
+.superpowers/
+.claude/
+/toy.gif

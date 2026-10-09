@@ -90,4 +90,4 @@ central arm; collateral detour caused by a parked obstacle.
 * The barrier maps are built to make pushing worthwhile. `--crossing 0` or a high `--fee` shows when it is not.
 * The language model is simulated: `--intake oracle` stands in for it, and no real model has been run.
 * Only pushing exists. Carrying obstacles to a dump zone, claim locks and detour pushes for others' benefit
-  are later stages (see the design in `docs/superpowers/specs`).
+  are later stages.

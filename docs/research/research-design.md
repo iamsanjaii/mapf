@@ -2,7 +2,6 @@
 
 Status: DESIGN SPEC v2 (no code written). Date: 2026-10-02. Target: IEEE T-ASE Special Issue "Agentic
 Intelligence for Materials Handling, Warehousing, and Logistics 5.0" (deadline 15 Feb 2027).
-Companion plan: `docs/superpowers/plans/2026-10-02-rent-or-fill.md` (v2).
 Prior-art notes: `docs/prior_art.md`. Review that produced v2: `docs/research/review-2026-10-02.md`.
 
 This document is the thing to approve or reject. The plan only executes it.
@@ -654,7 +653,7 @@ RoF-X, RoF-W, Stage 3) are dropped first.
 
 ## 13. Impact on the implementation plan
 
-The plan `docs/superpowers/plans/2026-10-02-rent-or-fill.md` was updated to v2 on 2026-10-02. For the
+The implementation plan was updated to v2 on 2026-10-02. For the
 record, the changes from the v1 plan were:
 
 * Task 1 config: add `r_traffic`, `loss_traffic`, `intake`, `gate`, `approval_timeout`, `window`; add

@@ -474,7 +474,6 @@ MAPF/
 │   ├── theory.md                    # The propositions (written for the earlier pit model)
 │   └── results.md                   # Status of the experiments
 │
-├── docs/superpowers/specs/          # The design this version was built from
 └── tests/doi/                       # One test file per module
 ```
 
