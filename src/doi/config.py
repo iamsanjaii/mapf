@@ -9,7 +9,7 @@ _LIGHTEST = min(k.weight for k in KINDS.values() if k.slots)      # lightest kin
 
 POLICIES = frozenset({"never", "myopic", "eager", "rof", "rof_local", "rof_f", "central", "hindsight", "free",
                       "rof_r", "rof_p", "rof_a"})
-FORECASTERS = ("numeric", "keyword", "oracle", "inverted")
+FORECASTERS = ("numeric", "keyword", "ledger", "oracle", "inverted")
 AGENT_MODES = ("tools", "single")
 
 

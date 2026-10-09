@@ -52,9 +52,19 @@ def test_keyword_puts_a_drop_before_a_surge_and_ignores_unknown_wording():
 
 
 def test_make_forecaster_names():
-    for name in ("numeric", "keyword", "oracle", "inverted"):
+    for name in ("numeric", "keyword", "ledger", "oracle", "inverted"):
         assert make_forecaster(name).name == name
     with pytest.raises(ValueError, match="llm"):
         make_forecaster("llm:small")
     with pytest.raises(ValueError):
         make_forecaster("crystal_ball")
+
+
+def test_ledger_forecaster_answers_from_the_recorded_saving_alone():
+    import dataclasses
+    from src.doi.forecast.forecasters import LEDGER_THRESHOLD, make_forecaster
+    f = make_forecaster("ledger")
+    low = dataclasses.replace(BASE, ledger={**BASE.ledger, "saving_on_recorded_trips": LEDGER_THRESHOLD})
+    high = dataclasses.replace(BASE, ledger={**BASE.ledger, "saving_on_recorded_trips": LEDGER_THRESHOLD + 0.5},
+                               notices=(("n0", 1, "radio: picking is done in the north bays"),))
+    assert f.forecast(low).answer is False and f.forecast(high).answer is True

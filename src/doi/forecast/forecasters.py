@@ -2,6 +2,7 @@
 
   numeric   the arithmetic extrapolation of the ledger (what rof_p uses)
   keyword   reads notices by matching cue phrases; falls back to numeric
+  ledger    a threshold on the saving already recorded (one constant, fixed on the dev split)
   oracle    the truth label (the best a forecaster can be)
   inverted  the opposite of the truth (the worst)
 """
@@ -33,6 +34,18 @@ class NumericForecaster:
 
     def forecast(self, case: ForecastCase) -> ForecastResult:
         return plain(case.numeric_forecast)
+
+
+LEDGER_THRESHOLD = 2.0       # fixed on dev seeds 0..19 (88% there); never refit on test or human
+
+
+class LedgerForecaster:
+    """Yes when the recorded trips already show a saving above a fixed threshold. It reads no notice. It is the
+    bar a model has to clear to claim it adds anything beyond the ledger."""
+    name = "ledger"
+
+    def forecast(self, case: ForecastCase) -> ForecastResult:
+        return plain(case.ledger["saving_on_recorded_trips"] > LEDGER_THRESHOLD)
 
 
 class OracleForecaster:
@@ -89,7 +102,8 @@ class LlmForecaster:
         return run_agent(case, self.chat, self.mode)
 
 
-FORECASTERS = {"numeric": NumericForecaster, "keyword": KeywordForecaster, "oracle": OracleForecaster,
+FORECASTERS = {"numeric": NumericForecaster, "keyword": KeywordForecaster, "ledger": LedgerForecaster,
+               "oracle": OracleForecaster,
                "inverted": InvertedForecaster}
 
 
