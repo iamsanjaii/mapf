@@ -4,6 +4,11 @@
 
 A research-grade Python simulator for studying how multiple robots can navigate a shared 2D grid world — avoiding collisions, resolving conflicts, and even modifying the environment when obstacles block their paths.
 
+The repository has two parts:
+
+* **Legacy simulator** (sections 1 to 11): centralised multi-robot path finding on a grid, from independent A* up to cooperating agents, plus removable obstacles (pits and sandbags).
+* **Rent-or-Fill** (section 12, `src/doi/`): a decentralised simulator in which a fleet decides, without a central planner, when it is cheaper to push a removable obstacle out of the way than to keep walking round it, with an optional language-model forecaster behind a safety guard.
+
 ---
 
 ## Table of Contents
@@ -19,6 +24,7 @@ A research-grade Python simulator for studying how multiple robots can navigate 
 9. [Experiments](#9-experiments)
 10. [How to Run](#10-how-to-run)
 11. [Project Structure](#11-project-structure)
+12. [Rent-or-Fill: decentralised push-or-detour simulator](#12-rent-or-fill-decentralised-push-or-detour-simulator-srcdoi)
 
 ---
 
@@ -372,7 +378,7 @@ Loop (up to max_iterations):
 ### Sandbags (`src/mapf_ro/sandbag.py`)
 
 - Sandbags are movable objects sitting on the grid
-- A robot can **carry** a sandbag and **deploy** it into an adjacent pit
+- Sandbag transport is accounted as a cost (Manhattan distance x per-step cost); robots do not physically carry them in the legacy code
 - Moving a sandbag costs extra energy (configurable, default 4 units per step)
 
 ### Traffic Index (`src/mapf_ro/removal.py`)
@@ -383,15 +389,18 @@ Before deciding to fill a pit, the system calculates a **Traffic Index**:
 
 ### Decision Logic
 
-```
-removal_cost  = base_cost / traffic_index
-detour_cost   = sum of extra steps for all affected robots
+Current behaviour (as implemented in `src/mapf_ro/removal.py`):
 
-If removal_cost < detour_cost:
-    → Fill the pit (environment modification is cheaper)
-Else:
-    → Reroute robots around the pit (detour is cheaper)
 ```
+removal_cost = sandbag_travel_cost + fill_cost
+net_benefit  = detour_cost - removal_cost
+fill the pit when net_benefit > 0
+```
+
+The traffic index is recorded but does not affect the decision. Sandbag
+transport is a cost estimate (Manhattan distance x per-step cost); no robot
+physically carries a sandbag in the legacy MAPF-RO code. The decentralised
+simulator in `src/doi/` models carrying physically.
 
 ### Replanning Loop (`src/mapf_ro/replanning.py`)
 
@@ -424,7 +433,7 @@ These are stored in a `RunMetrics` dataclass and serialised to CSV for analysis.
 
 ## 9. Experiments
 
-Five experiment scripts test different research questions:
+Three experiment scripts test the legacy planners (the Rent-or-Fill experiments are listed in section 12):
 
 ### Experiment A — Heuristic Comparison
 ```bash
@@ -555,12 +564,27 @@ MAPF/
 │   ├── q1_heuristics.py             # Experiment A: heuristic comparison
 │   ├── q2_mapf.py                   # Experiments B/C/D/F: multi-robot
 │   ├── mapf_ro.py                   # Experiment E: removal vs detour
+│   ├── doi_*.py                     # Rent-or-Fill experiments (section 12)
 │   └── results/                     # All CSV + PNG outputs saved here
+│
+├── run_doi.py                       # Command line for the Rent-or-Fill simulator (section 12)
+│
+├── src/doi/                         # Rent-or-Fill: world, agents, policies, network, scenarios,
+│   │                                #   carry/dump/pit-fill (Stage 2), animation and the wizard
+│   ├── forecast/                    # Forecast cases, forecasters, the agent loop and its tools
+│   └── llm/                         # Chat client, record/replay cache, exception intake
+│
+├── data/
+│   ├── incidents/                   # Incident report datasets
+│   └── forecasts/                   # Stand-in notice texts and the protocol for the human set
+│
+├── docs/research/                   # Research design, theory, results, prior-art notes
 │
 └── tests/
     ├── test_astar.py                # 22 A* unit tests
     ├── test_conflicts.py            # 9 conflict detection tests
-    └── test_mapf.py                 # 21 MAPF + RobotManager tests
+    ├── test_mapf.py                 # 21 MAPF + RobotManager tests
+    └── doi/                         # 486 Rent-or-Fill tests, one file per module
 ```
 
 ---
@@ -583,6 +607,7 @@ MAPF/
 All parameters are centralised — no values are hardcoded in the source.
 
 ```yaml
+# AMR-MAPF: default configuration
 grid:
   width: 20
   height: 20
@@ -592,9 +617,9 @@ robots:
   count: 5
 
 planning:
-  algorithm: agentic        # independent | prioritized | agentic
-  heuristic: manhattan      # manhattan | euclidean | chebyshev | octile
-  max_timesteps: 200
+  algorithm: prioritized          # independent | prioritized | agentic
+  movement: 4                     # 4-directional movement
+  heuristic: manhattan            # manhattan | euclidean | chebyshev
 
 cost:
   movement: 1
@@ -604,5 +629,168 @@ cost:
 
 experiment:
   seed: 42
-  runs_per_config: 10
+  runs_per_config: 10             # repetitions per parameter combination
+  save_csv: true
+  save_plots: true
+  output_dir: experiments/results
 ```
+
+---
+
+## 12. Rent-or-Fill: decentralised push-or-detour simulator (`src/doi/`)
+
+The second half of the project. The legacy code above asks how robots plan paths. This part asks what a fleet
+should do when a *removable* obstacle (a pallet, a crate, a shelf unit) blocks the way: pay once to move it, or
+keep paying a detour on every trip. There is no central planner. Each robot knows only what it has seen and what
+its neighbours have told it, through a lossy, range-limited network. A plain-language walkthrough is in
+[src/doi/README.md](src/doi/README.md).
+
+### The rule
+
+This is the ski-rental problem. **Rent-or-Fill (`rof`)**: a robot pushes the obstacle once the detour cost the
+fleet has recorded so far, read from a shared ledger that spreads by gossip, reaches the price of the push.
+
+| Policy | Idea |
+|---|---|
+| `never` | always take the detour |
+| `myopic`, `eager` | push if it pays for *me* now / push at the first sign of a saving |
+| **`rof`** | push when the fleet's recorded detour total reaches the price |
+| `rof_p` | the same rule with the threshold scaled by the robot's own forecast of whether the push will pay |
+| `rof_a` | `rof_p` with a pluggable forecaster (a model, a rule or an oracle) behind a guard, see below |
+| `central` | the same rule with one boss who sees every detour at once |
+| `free`, `hindsight` | cost references: every obstacle removed for free in advance, and the set an offline optimum would remove |
+
+`python run_doi.py --list` prints every scenario and policy, including the `rof_local`, `rof_f` and `rof_r`
+variants.
+
+### Layers
+
+* **L0** `world.py`: ground truth, move arbitration (vertex, swap and cycle conflicts), pushing and carrying.
+* **L1** `agent.py`, `pusher.py`, `policies.py`: one agent per robot with its own CRDT belief
+  (`crdt.py`, `belief.py`, `evidence.py`), talking through `network.py`. The push decision is a numeric rule.
+* **L2** `llm/` and `forecast/`: language models, used in two places and never inside the rule itself.
+  *Exception intake* turns a text report ("pallet down in aisle 7") into a class and a place; it runs offline and
+  the simulator replays the stored answers. The *forecast agent* gives a yes/no forecast, "will the fleet's saving
+  reach the price?", for `rof_a`. A guard keeps the classical rule whenever there is no forecast, so a failing
+  model cannot make the fleet worse than the rule it replaces. Model calls are recorded and replayed.
+  A test checks that the decision modules do not import `llm`.
+
+### Stage 2: carry, racks and pit fill
+
+A robot can also **carry** an obstacle to a dump region or a rack (many one-obstacle slots), or **fill** a pit with
+debris. Scenarios: `warehouse_racks`, `dump_central`, `site_pits`, `mixed`. Build your own with
+`--layout site`. In the full S2 run, racks changed the mix of push and carry, not the total cost. On `dump_central` the
+dump is far away, so at the default costs nothing is carried (`experiments/doi_s2_modes.py`).
+
+### Run it
+
+```bash
+python run_doi.py --play                      # type the grid size, robots and number of obstacles; opens a window
+python run_doi.py --demo toy                  # never vs rof side by side, short table
+python run_doi.py --sim fleet                 # 8 robots, 4 obstacles in a barrier, one arm
+python run_doi.py --build                     # set the map and fleet interactively, preview, then run
+python run_doi.py --scenario single_block --robots 12 --policy rof,never,central --seed 3
+python run_doi.py --demo toy --html toy.html  # a self-contained player for any browser
+python run_doi.py --guide                     # every flag in plain language
+python run_doi.py --list                      # scenarios and policies
+```
+
+### Experiments
+
+Most scripts have a `--quick` pilot mode. Results land in `experiments/results/doi/` (git-ignored).
+
+| Script | Question |
+|---|---|
+| `doi_e1_ratio.py` | E1: how close is `rof` to the exact optimum (competitive ratio)? |
+| `doi_e2_information.py` | E2: what does imperfect information cost (ledger range, loss, delay, fleet size)? |
+| `doi_e7_intake.py` | E7: cost of no, oracle and language-model intake, and of false reports |
+| `doi_s2_modes.py` | S2: push versus carry versus fill, against slot capacity and haul distance |
+| `doi_e9_headroom.py` | E9 pilot: how much can any forecaster change cost? Calls no model |
+| `doi_e9_agent.py` | E9: the guarded policy with each forecaster, end to end on `shift_notice` |
+| `doi_agent_cases.py`, `doi_agent_eval.py` | collect forecast cases with their truth label; score forecasters on them |
+| `doi_make_notices.py` | write stand-in notice texts with language models (not the human set) |
+| `doi_intake_run.py`, `doi_intake_eval.py`, `doi_build_incidents.py` | the incident datasets and intake scoring |
+
+### What has been measured
+
+**Does a forecast help? (E9, no model, 100 seeds, `shift_notice`, λ = 0.5.)** Mean avoidable cost, that is
+total cost minus the `free` arm's on the same seed. Lower is better.
+
+| Arm | Work shifts to the other bays | No shift |
+|---|---|---|
+| `never` | 375 | 387 |
+| `rof` | 147 | 105 |
+| `rof_a` + `numeric` forecast | 130 | 75 |
+| `rof_a` + `ledger` rule | 116 | 77 |
+| `rof_a` + `oracle` (best possible) | 112 | 72 |
+| `rof_a` + `inverted` (worst possible) | 178 | 142 |
+
+The guarded rule with a plain numeric forecast beats `rof` by a median of 12 to 17 per run (95% interval above
+zero). A perfect forecast would add a further 4% to 14% at λ = 0.5 (27% in the shift case at λ = 0.25), so
+there is a limited margin for a smarter forecaster to win.
+
+**Can a language model give that forecast? (100 dev cases spread over 20 seeds.)** Accuracy of the yes/no forecast:
+
+| Forecaster | Accuracy |
+|---|---|
+| `ledger`: yes if the saving already recorded exceeds 2 | 0.90 (0.88 on all dev, 0.86 on 2,949 held-out cases) |
+| `gpt-4o` with tools | 0.59 |
+| `gpt-4o-mini` with tools | 0.55 |
+| `numeric` extrapolation | 0.48 |
+| `keyword` notice reader | 0.55 (0.49 on held-out wording) |
+
+The truth is "yes" in half of these cases, but the models answer "yes" in only about 20% (`gpt-4o-mini`) and 30%
+(`gpt-4o`) of them, and they do not make use of the ledger. A one-line rule on the recorded saving beats them by
+about 30 points, and it reads no notice. The model arms of E9 have not been run, so there is no end-to-end cost
+for a model yet.
+
+### Limits to know about
+
+* **Notices and the E9 costs.** Notices do reach the robots: in 40 traced runs every robot held both notices.
+  The costs are identical with and without a notice because no arm in the no-model E9 reads one (`keyword` uses
+  cue phrases from the `dev` wording and E9 uses the `test` wording, by design). So E9 says nothing yet about
+  the value of reading notices; only a model arm can. It does bound it: the best possible forecaster (`oracle`)
+  is within 4 of the `ledger` rule (3% to 6% of avoidable cost), so a perfect notice reader has little left to
+  win. The label counts every task, past and future, so the saving already recorded settles most of it, which is
+  why the one-line ledger rule is hard to beat. A naive reader (a drop notice means no, a surge means yes) is
+  right only 47% of the time on true notices, against 88% for the ledger rule.
+* **No human-written notice set exists.** `data/forecasts/llm_notices.jsonl` holds 124 texts written by
+  `gpt-4o-mini` and `gpt-4o`. Anything scored on it is a model scored on model-written text, not the human set.
+* **Stalls.** At a high fee a pushed pallet can land on another robot's pending goal and the rule never clears it
+  (16 of 8,000 runs in an earlier pilot, none in the 8,000 above). Stalled points are left out of the summaries.
+* Experiments E3 to E6 and E8 (complements, claims, shifting demand, benchmark maps, the human approval gate)
+  were written for an earlier pit model and have been removed, not re-run for pushing. See
+  `docs/research/results.md`.
+
+### Configuration
+
+Models are configured through environment variables only. Keys are never written to files.
+
+```bash
+export OPENAI_API_KEY=...                     # kept in your shell profile
+export DOI_LLM_SMALL_URL=https://api.openai.com/v1 DOI_LLM_SMALL_MODEL=gpt-4o-mini
+export DOI_LLM_LARGE_URL=https://api.openai.com/v1 DOI_LLM_LARGE_MODEL=gpt-4o
+```
+
+Anything that can spend money prints an upper bound on the calls and asks first. A model run replays stored
+calls and fails on a miss unless you pass `--live`:
+
+```bash
+python experiments/doi_agent_cases.py                                  # collect forecast cases (no model)
+python experiments/doi_agent_eval.py --cases data/forecasts/dev.jsonl --forecasters numeric,keyword,ledger,llm:small --sample 100 --live
+python experiments/doi_e9_agent.py --model-keys "" --jobs 4            # E9 with no model arms
+```
+
+Use `--sample N`, not `--quick`, to score a model: the first 20 cases all come from one seed.
+The datasets and their protocol are described in [data/forecasts/README.md](data/forecasts/README.md).
+
+### Tests
+
+```bash
+python -m pytest tests -q              # 538 tests; tests/doi holds the Rent-or-Fill ones
+```
+
+### Design notes
+
+The theory and status are in `docs/research/theory.md`, `docs/research/results.md` and
+`docs/research/prior-art-verification.md`.

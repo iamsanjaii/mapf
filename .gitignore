@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.idea/
+.DS_Store
+.coverage
+.pytest_cache/
+venv/
+experiments/results/doi/
+.env
+.env.*
+data/maps/
+data/forecasts/dev.jsonl
+data/forecasts/test.jsonl
+data/forecasts/human.jsonl
+# working notes, not part of the project
+docs/superpowers/
+.superpowers/
+.claude/
+/toy.gif
+docs/research/research-design.md
