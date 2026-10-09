@@ -10,10 +10,10 @@ simulator and have been removed. They are in git history (commit `29fdf45`) for 
 ## What exists now
 
 * `experiments/doi_e2_information.py`: price of information (ledger range, loss, delay, fleet size).
-* `experiments/doi_e7_intake.py`: cost of none/oracle/llm intake and false reports in the incident scenarios.
+* `experiments/doi_e7_intake.py`: cost of none and oracle intake and false reports in the incident scenarios.
 * `experiments/doi_common.py`: the shared grid runner.
-* `experiments/doi_e9_headroom.py`: how much any forecaster can change cost on `shift_notice` (output below, no model).
-* `experiments/doi_agent_cases.py`, `doi_agent_eval.py`, `doi_e9_agent.py`: the case collector, the forecaster scoring and the end-to-end experiment for the forecast agent. Built; **no model call has been made, no case file has been generated and E9 has not been run in full.** The hypotheses H9a to H9d are in the design spec; the H9c margin is to be fixed after the `--quick` pilot, with the tag `prereg-agent-v1`.
+* `experiments/doi_e9_headroom.py`: how much any forecaster can change cost on `shift_notice` (output below).
+* `experiments/doi_agent_cases.py`, `doi_agent_eval.py`, `doi_e9_agent.py`: the case collector, the forecaster scoring and the end-to-end experiment for the guarded rule. E9 has been run in full with the rule-based forecasters (100 seeds); the paired results are in the main README, section 12.
 
 Both scripts have a `--quick` pilot mode (3 seeds, smallest axes). Neither has been run in full.
 

@@ -25,20 +25,17 @@ Verdict vocabulary: `distinct`, `overlaps on <what>`, `scooped`.
 |---|---|---|
 | "ski rental" with multi-robot, warehouse, MAPF | Nothing on ski rental in robotics; results were lifelong MAPF in warehouses (rolling-horizon collision resolution, caching-augmented MAPF). | no prior work found at this search depth |
 | online with movable obstacles / permanent decentralised edits | Only decentralised collision avoidance with stationary and moving obstacles (an MIT result). Nothing about deciding to remove obstacles online. | no prior work found at this search depth |
-| CRDT with multi-robot | General CRDT overviews and one bachelor thesis on a CRDT framework for autonomous robots (HAW Hamburg). | overlaps on "CRDTs in multi-robot systems in general", which spec 1.4 already says not to claim |
-| LLM or VLM with warehouse exception or incident | Sotomi et al., "Embodied Hazard Mitigation using Vision-Language Models for Autonomous Mobile Robots", arXiv [2509.06768](https://arxiv.org/abs/2509.06768): per-robot hazard detection, reporting and automated mitigation with an edge-AI architecture, 91.2% accuracy in a 30-person test; the abstract mentions no multi-robot planner, no permanent environment edits and no approval workflow. Also several VLM warehouse-anomaly demos. | overlaps on LLM/VLM anomaly reporting for AMRs; distinct on a ledger-fed decision rule and on the confirmation invariant (no haul without physical confirmation) |
-| LLM with multi-robot task allocation | Many LLM planners (centralised, decentralised dialogue, hierarchical). | distinct: they put the LLM on the decision path; here it is kept off it (spec 5.1) |
-| human-on-the-loop with AMR | Generic human approval of LLM-generated plans and explainable supervisor consoles. | overlaps on the generic idea of human approval; distinct on gating a permanent edit with numbers taken from a ledger |
+| CRDT with multi-robot | General CRDT overviews and one bachelor thesis on a CRDT framework for autonomous robots (HAW Hamburg). | overlaps on "CRDTs in multi-robot systems in general", which spec 1.3 already says not to claim |
+| human-on-the-loop with AMR | Generic human approval of machine-generated plans and explainable supervisor consoles. | overlaps on the generic idea of human approval; distinct on gating a permanent edit with numbers taken from a ledger |
 
 ## Items marked (check) in spec section 1 that were not verified
 
 Guidance-graph optimisation for lifelong MAPF (Zhang et al. 2024); Svancara et al. AAAI 2019; market-based
-MRTA (Dias et al. 2006); SMART-LLM and RoCo. They were not searched individually. Their rows in spec section 1
+MRTA (Dias et al. 2006). They were not searched individually. Their rows in spec section 1
 still say "(check)".
 
 ## Pivot rules
 
 None is triggered at this evidence level: nothing found does decentralised online permanent map edits for
-robots (rule 1), and nothing found combines LLM exception intake feeding a multi-robot planner with a
-confirmation invariant (rule 2). Rule 1 is the claim to re-test hardest with the full texts, in particular
+robots (rule 1). Rule 1 is the claim to re-test hardest with the full texts, in particular
 items 1b and 2.

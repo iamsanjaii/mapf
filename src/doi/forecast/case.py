@@ -1,7 +1,7 @@
 """ForecastCase: what one robot knows about one candidate action, frozen into plain data, and the truth label.
 
-A forecaster sees a case and nothing else, so forecasters can be tested, and models scored, without a simulation.
-The fields a model may see are listed in VISIBLE; `truth`, `numeric_forecast`, `robot` and `tick` are not shown.
+A forecaster sees a case and nothing else, so forecasters can be tested and scored without a simulation.
+The fields a forecaster may see are listed in VISIBLE; `truth`, `numeric_forecast`, `robot` and `tick` are not.
 """
 import hashlib
 import json
@@ -70,6 +70,13 @@ def numeric_saving(ledger: Dict[str, float]) -> float:
     seen, expected = ledger["trips_recorded"], ledger["trips_expected"]
     return (ledger["saving_on_my_current_trip"]
             + ledger["saving_on_recorded_trips"] * max(0.0, expected - seen) / max(1.0, seen))
+
+
+def recorded_projection(ledger: Dict[str, float]) -> float:
+    """The saving on the recorded trips, scaled up to every trip expected: what the fleet saves if the rest of the
+    shift looks like the record. It leaves out the robot's own current trip, which is one trip measured on its own
+    map and was the worst single guide to the fleet total on the dev and test cases."""
+    return ledger["saving_on_recorded_trips"] * ledger["trips_expected"] / max(1.0, ledger["trips_recorded"])
 
 
 def _sample(cells, n: int, seed: int, name: str) -> list:

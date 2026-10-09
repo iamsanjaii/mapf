@@ -50,27 +50,6 @@ def test_a_wrong_class_report_is_caught_by_the_world():
     assert right.wrong_class_attempts == 0 and right.removals == 0
 
 
-def test_llm_intake_reads_cache_only(tmp_path):
-    from src.doi.incidents import render_report, report_rng, location_names
-    from src.doi.llm.intake import IntakeCache, IntakeResult, cache_key
-    s = d_scenario()
-    text, _, _ = render_report(s.reports[0], report_rng(s, s.reports[0]))
-    key = cache_key(text, location_names(s))
-    with pytest.raises(KeyError):
-        d_run(s, intake="llm:fake", intake_cache=str(tmp_path))
-    IntakeCache(str(tmp_path), "fake").put(IntakeResult(key, True, "gap", "pallet", "robot_clearable", 1, 0.9,
-                                                        "x", "", 1.2, 10, 10, "{}"))
-    r = d_run(s, intake="llm:fake", intake_cache=str(tmp_path))
-    assert r.intake["records"] == 1 and r.removals == 1
-
-
-def test_llm_boundary_imports():
-    root = pathlib.Path(__file__).resolve().parents[2] / "src" / "doi"
-    for name in ("policies", "pushplan", "pusher", "agent", "spacetime", "world", "evidence", "belief"):
-        lines = [l for l in (root / f"{name}.py").read_text().splitlines() if "import" in l]
-        assert not any("llm" in l for l in lines), name
-
-
 def test_wrong_class_oracle_probability_is_deterministic():
     s = d_scenario(cls="needs_human")
     a = d_run(s, p_wrong_class=0.5)

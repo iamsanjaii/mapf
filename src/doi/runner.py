@@ -1,6 +1,5 @@
 """run_episode: the tick loop tying world, network, agents and policy together."""
 import dataclasses
-import math
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -9,7 +8,7 @@ from src.doi.config import SimConfig
 from src.doi.evidence import EvidenceEngine
 from src.doi.metrics import RunResult
 from src.doi.crdt import ObstructionRecord
-from src.doi.incidents import location_names, locate, render_report, report_rng
+from src.doi.incidents import locate
 from src.doi.network import Network
 from src.doi.notices import NoticeFeed
 from src.doi.policies import CentralPolicy, HindsightPolicy, PushPolicy, Shared, make_policy
@@ -28,12 +27,6 @@ class Intake:
         for idx, r in enumerate(scenario.reports):
             self.by_tick.setdefault(r.emit_tick, []).append((idx, r))
         self.pending: Dict[int, List[Tuple[int, ObstructionRecord]]] = {}
-        self.cache = None
-        self.names = location_names(scenario)
-        if cfg.intake.startswith("llm:"):
-            from src.doi.llm.intake import IntakeCache
-            self.model_key = cfg.intake.split(":", 1)[1]
-            self.cache = IntakeCache(cfg.intake_cache, self.model_key)
 
     @staticmethod
     def nearest(agents, cell) -> Optional[int]:
@@ -52,22 +45,8 @@ class Intake:
             self.counts["reports"] += 1
             if cfg.intake == "none":
                 continue
-            if cfg.intake == "oracle":
-                rec, due = ObstructionRecord(report.report_id, node, report.location, cells, report.kind,
-                                             report.cls, 1, 1.0, "oracle"), t
-            else:
-                from src.doi.llm.intake import cache_key, to_record
-                text = render_report(report, report_rng(scenario, report))[0]
-                res = self.cache.get(cache_key(text, self.names))
-                if res is None:
-                    raise KeyError(f"no cached intake result for report {report.report_id}; run "
-                                   f"experiments/doi_intake_run.py --model-key {self.model_key} "
-                                   f"--scenario {scenario.name} --seeds {scenario.meta.get('seed')}..")
-                if not res.ok:
-                    self.counts["rejected"] += 1
-                    continue
-                rec = to_record(res, report.report_id, node, scenario)
-                due = t + max(1, math.ceil(res.latency_s / cfg.tick_seconds))
+            rec, due = ObstructionRecord(report.report_id, node, report.location, cells, report.kind,
+                                         report.cls, 1, 1.0, "oracle"), t
             if report.cls == "needs_human" and u01(cfg.seed, idx, 77) < cfg.p_wrong_class:
                 rec = dataclasses.replace(rec, cls="robot_clearable")
             self.pending.setdefault(due, []).append((node, rec))

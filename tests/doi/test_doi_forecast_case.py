@@ -84,3 +84,12 @@ def test_case_survives_json_and_its_id_ignores_hidden_fields():
 def test_plan_key_and_mode_for_a_plain_plan():
     plan = SimpleNamespace(key=((1, 2), (0, 1), 2))
     assert plan_key(plan) == (((1, 2), (0, 1), 2),) and plan_mode(plan) == "push"
+
+
+def test_recorded_projection_applies_the_recorded_rate_to_every_expected_trip():
+    from src.doi.forecast.case import recorded_projection
+    ledger = {"trips_recorded": 10.0, "trips_expected": 160.0, "saving_on_recorded_trips": 6.0,
+              "saving_on_my_current_trip": 143.0}
+    assert recorded_projection(ledger) == 96.0                    # the robot's own trip is not in it
+    assert recorded_projection({**ledger, "trips_recorded": 0.0, "saving_on_recorded_trips": 0.0}) == 0.0
+    assert recorded_projection({**ledger, "saving_on_recorded_trips": -4.0}) == -64.0
