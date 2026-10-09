@@ -10,6 +10,8 @@ Hypotheses (fixed before a full run; the margin of H9c is fixed after the --quic
   H9b  false notices: rof_a with a model costs no more than rof_a with inverted; its cost against rof is reported
   H9c  no notices (missing, quiet): rof_a with a model is within a fixed margin of rof_a with numeric
   H9d  is scored by doi_agent_eval.py on the human cases, not here
+  H9e  (added after the dev pilot, so exploratory) every mode: rof_a with a model against rof_a with `ledger`, a
+       one-constant rule on the recorded saving that reads no notice
 
 Usage: venv/bin/python experiments/doi_e9_agent.py [--quick] [--seeds 100] [--model-seeds 30] [--jobs 4]
            [--modes true,false,missing,quiet] [--model-keys small,large] [--with-single] [--cache DIR] [--live] [--yes]
@@ -39,7 +41,8 @@ from src.doi.stats import bootstrap_ci
 
 NON_MODEL_ARMS = [("never", "never", "numeric", "tools"), ("rof", "rof", "numeric", "tools"),
                   ("rof_p", "rof_p", "numeric", "tools"), ("numeric", "rof_a", "numeric", "tools"),
-                  ("keyword", "rof_a", "keyword", "tools"), ("oracle", "rof_a", "oracle", "tools"),
+                  ("keyword", "rof_a", "keyword", "tools"), ("ledger", "rof_a", "ledger", "tools"),
+                  ("oracle", "rof_a", "oracle", "tools"),
                   ("inverted", "rof_a", "inverted", "tools")]          # (label, policy, forecaster, agent mode)
 MODES = ["true", "false", "missing", "quiet"]
 PRIMARY = (0.5, 5)                                                       # (lam, notice_tick)
@@ -106,6 +109,8 @@ def hypotheses(labels) -> list:
     for model in sorted(l for l in labels if l.startswith("llm:") and "single" not in l):
         out += [("H9a", "true", "numeric", model), ("H9b", "false", "inverted", model), ("H9b", "false", "rof", model),
                 ("H9c", "missing", "numeric", model), ("H9c", "quiet", "numeric", model)]
+        # added after the dev pilot, which showed numeric is a weak bar (0.48): a model against the ledger rule
+        out += [("H9e", m, "ledger", model) for m in MODES]
     return out
 
 
@@ -115,7 +120,8 @@ def summarise(df: pd.DataFrame) -> pd.DataFrame:
     labels = set(kept.arm)
     pairs = [(h, m, a, b) for h, m, a, b in hypotheses(labels)]
     pairs += [("ref", m, a, b) for m in MODES for a, b in (("numeric", "oracle"), ("inverted", "oracle"),
-                                                         ("rof", "numeric"), ("never", "rof"))]
+                                                         ("rof", "numeric"), ("never", "rof"),
+                                                         ("numeric", "ledger"), ("ledger", "oracle"))]
     out = []
     for (lam, tick, mode), g in kept.groupby(["lam", "notice_tick", "mode"]):
         wide = g.pivot(index="seed", columns="arm", values="avoidable")

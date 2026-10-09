@@ -37,7 +37,7 @@ def _reply(messages, tools):
 
 def test_arms_follow_the_store_and_the_live_flag(tmp_path):
     e9 = _load("doi_e9_agent")
-    assert [a[0] for a in e9.NON_MODEL_ARMS] == ["never", "rof", "rof_p", "numeric", "keyword", "oracle", "inverted"]
+    assert [a[0] for a in e9.NON_MODEL_ARMS] == ["never", "rof", "rof_p", "numeric", "keyword", "ledger", "oracle", "inverted"]
     arms = e9.model_arms(["small", "large"])
     assert [a[0] for a in arms] == ["llm:small", "llm:large", "llm:small single"]
     assert [a[3] for a in arms] == ["tools", "tools", "single"]
@@ -67,7 +67,7 @@ def test_quick_run_without_a_model_writes_runs_and_a_summary(tmp_path, capsys):
     runs = pd.read_csv(out / "runs.csv", dtype={"mode": str})
     assert sorted(runs.arm.unique()) == sorted(a[0] for a in e9.NON_MODEL_ARMS)
     assert sorted(runs.seed.unique()) == [200, 201, 202] and set(runs["mode"]) == {"true"}
-    assert (runs.avoidable == runs.J - runs.J_free).all() and len(runs) == 3 * 7
+    assert (runs.avoidable == runs.J - runs.J_free).all() and len(runs) == 3 * 8
     assert {"mode", "lam", "notice_tick", "compare", "median_diff", "lo", "hi", "n"} <= set(pd.read_csv(out / "summary.csv").columns)
     printed = capsys.readouterr().out
     assert "no model was called" in printed and "no stored calls for llm:small" in printed
