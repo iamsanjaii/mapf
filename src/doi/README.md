@@ -1,4 +1,4 @@
-# Rent-or-Push: Decentralised Remove-or-Detour Simulator
+# Rent-or-Fill: Decentralised Remove-or-Detour Simulator
 
 **Robots that decide, without a boss, when it is cheaper to push an obstacle out of the way than to keep walking round it**
 
@@ -37,7 +37,7 @@ The goal is the **lowest total cost for the whole fleet**, not just finding a pa
 |---|---|---|
 | Never push | Naïve | Always take the detour |
 | Myopic / Eager | Rule-based | Push if it is cheaper for *me* / push at the first sign of a saving |
-| **Rent-or-Push (RoF)** | Decentralised | Push when the fleet's *shared* detour total reaches the price |
+| **Rent-or-Fill (RoF)** | Decentralised | Push when the fleet's *shared* detour total reaches the price |
 | Central | Omniscient | Same rule, but one boss sees every detour instantly |
 
 It also covers **incidents**: obstructions that appear *during* the run and are reported as text ("pallet down in aisle 7"), which robots must verify and classify before they touch them.
@@ -50,7 +50,7 @@ It also covers **incidents**: obstructions that appear *during* the run and are 
 
 Robots never go through a wall. A cell is either floor, a **permanent wall** (never removable), or holds a **removable obstacle**: anything that can sit on the floor, such as a pallet, a crate or a shelf unit. Removing an obstacle empties its cell, so robots can pass. Obstacles can be anywhere on the grid; they are not tied to walls (`--demo scatter` has no wall at all).
 
-The only way to remove one is to **move it somewhere else**. In this version a robot moves it by **pushing**: it steps into the obstacle and the obstacle slides one cell onward. A pushed obstacle is still an obstacle where it lands, so it can block someone else.
+The only way to remove one is to **move it somewhere else**. A robot does that by **pushing**: it steps into the obstacle and the obstacle slides one cell onward. A pushed obstacle is still an obstacle where it lands, so it can block someone else. In Stage 2 a robot can also **carry** an obstacle to a rack or dump slot, where it is gone for good, or **fill** a pit with debris (section 7).
 
 | Glyph | Meaning | Push step costs |
 |---|---|---|
@@ -59,6 +59,8 @@ The only way to remove one is to **move it somewhere else**. In this version a r
 | `L` | pallet | `kappa` × 1.0 |
 | `C` | crate (light) | `kappa` × 0.5 |
 | `S` | shelf unit (heavy) | `kappa` × 2.0 |
+
+Other glyphs: `W` spill and `K` rack damage (incident kinds, never pushed when a report says they need a human), `R` debris (can be carried, or dropped into a pit), `P` pit (cannot be pushed; a robot fills it), `T` a rack slot (holds one pallet or crate) and `D` a dump slot (holds one obstacle of any carryable kind; a dump region is a block of them).
 
 The barrier maps (a dark column with obstacles in its openings and doors at the bottom) are one convenient shape: removing an obstacle opens a crossing, and the long way round is through the doors. It is a simplification chosen so that one removal creates a clear shortcut. The demo maps are also built to make pushing worthwhile (most trips cross the barrier, one door is far away), and `--crossing` and `--doors` let you check when it stops paying.
 
@@ -84,7 +86,7 @@ The **evidence** for a push is how much shorter the recorded tasks' routes would
 
 ### Own Path Only
 
-A robot never leaves its route to push something for someone else. It only pushes an obstacle that is on the route to its own goal, using steps it was going to walk anyway. The collective part is in the *decision*: it pushes when the fleet's accumulated rent justifies it, even if its own detour would have been cheaper.
+When it pushes, a robot never leaves its route to push something for someone else. It only pushes an obstacle that is on the route to its own goal, using steps it was going to walk anyway. (Carrying and filling do cost a detour: the robot walks to the obstacle and then to the slot, and the plan is judged on that whole cost.) The collective part is in the *decision*: it pushes when the fleet's accumulated rent justifies it, even if its own detour would have been cheaper.
 
 ### Cost (J)
 
@@ -94,7 +96,7 @@ How every arm is scored:
 J = moves + waits + (push steps × kappa × weight) + (push runs × fee)
 ```
 
-Lower is better. A task that can never be completed is charged a large penalty, so impossible is expensive but not forbidden.
+With carrying and filling the cost also includes `loaded steps × kappa_c × weight` and `pick_fee + drop_fee` for each carry or fill. Lower is better. A task that can never be completed is charged a large penalty, so impossible is expensive but not forbidden.
 
 ---
 
@@ -204,6 +206,18 @@ Adds up the recorded tasks' route lengths with the obstacle in its old place and
 
 ---
 
+### `carryplan.py`, `carrier.py` — Carrying and Filling
+
+`carryplan.py` plans the other two ways to remove an obstacle: `carry` lifts one on the robot's own route and puts it on a rack or dump slot that accepts its kind, and `fill` lifts debris and drops it into a pit. A plan is judged like a push plan, by what it costs this robot and by what it does to the believed map, and only the cheapest plan per obstacle is kept. `carrier.py` is the small state machine that carries one out: walk to the obstacle, haul it loaded to the slot, drop it. Once loaded, a robot does not abandon the load; if its slot turns out to be full it picks the cheapest remaining target.
+
+---
+
+### `abstract/` — The Abstract Model
+
+A stripped-down version of the problem (`core`, `instance`, `offline`, `online`) with the exact offline optimum, used by experiment E1 to measure the competitive ratio of the rule against the best possible choice.
+
+---
+
 ### `policies.py` — The Decision Rules
 
 Each *arm* (never, myopic, eager, rof, central, ...) is a small class that answers one question: *given this push plan, push or go round?* See section 5.
@@ -222,9 +236,12 @@ A lossy, short-range broadcast channel. Messages can be dropped, delayed and onl
 
 ---
 
-### `incidents.py`, `llm/` — The Language Layer
+### `incidents.py`, `notices.py`, `llm/`, `forecast/` — The Language Layer
 
-For incident scenarios: reports are rendered as text, and an intake step turns the text into a structured record (`oracle` is a perfect stand-in; `llm/` can call a real model, offline and cached). The language model is never involved in planning, pushing or traffic. It can now do one other thing: as the forecaster behind the arm `rof_a` it answers one yes/no question per candidate move ("will the fleet's saving reach the price?"), and the predicted-threshold rule guards the answer (a yes lowers the threshold, a no raises it, no answer leaves the classical rule). It can only read; every call is stored and replayed, and a run never calls a model unless `--agent-live` is given.
+Language models are used in two places and are never involved in planning, pushing or traffic (a test checks that the decision modules do not import `llm`).
+
+* **Exception intake** (`incidents.py`, `llm/intake.py`). For incident scenarios, reports are rendered as text and an intake step turns the text into a structured record. `oracle` is a perfect stand-in; `llm/` can call a real model, offline and cached.
+* **The forecast agent** (`notices.py`, `forecast/`). In `shift_notice`, a short text notice tells a robot that work is about to move. A *forecaster* answers one yes/no question per candidate move: "will the fleet's saving reach the price?" (`--forecaster numeric`, `keyword`, `ledger`, `oracle`, `inverted` or `llm:<key>`). For `llm:<key>` an agent loop (`forecast/agent.py`) gives the model three read-only tools (the notices, a ledger summary, the saving of one trip between two zones) and at most four turns. The arm `rof_a` uses the answer: a yes lowers the threshold, a no raises it, and no answer (the model failed, timed out or sent a bad reply) leaves the classical rule. The model cannot move a robot or change a threshold. Every call is stored and replayed, and a run never calls a model unless `--agent-live` is given.
 
 ---
 
@@ -259,7 +276,7 @@ Every arm runs on the **same map and same tasks**, so the only difference is the
 | `rof_f` | The same, but it forecasts the saving over the tasks still to come |
 | `rof_r` | Rent-or-Fill with a random threshold between 0 and 1 times the price (expected ratio e/(e-1)) |
 | `rof_p` | Rent-or-Fill that lowers its threshold when its forecast says the push will pay, and raises it when not |
-| `rof_a` | Rent-or-Fill guarded: a forecaster (`--forecaster numeric`, `keyword`, `oracle`, `inverted` or `llm:<key>`) says whether the move will pay; the threshold is lowered on a yes, raised on a no, and stays at the price while there is no answer |
+| `rof_a` | Rent-or-Fill guarded: a forecaster (`--forecaster numeric`, `keyword`, `ledger`, `oracle`, `inverted` or `llm:<key>`) says whether the move will pay; the threshold is lowered on a yes, raised on a no, and stays at the price while there is no answer |
 | `central` | The same rule with one omniscient ledger and map (what a boss would do) |
 | `free` | Benchmark: every obstacle gone at tick 0, for free |
 | `hindsight` | Benchmark: knows all tasks, removes the best obstacles at tick 0, charged the lowest possible price |
@@ -308,6 +325,15 @@ For the task in hand a robot looks at each obstacle on its open route, from each
 
 A robot only pushes an obstacle it has **seen** and knows a robot may **clear**. A report it has not verified, or an obstacle whose class needs a human, is never pushed. The world also refuses any push with no room beyond the obstacle, or one that needs a human.
 
+### Carrying and Filling (Stage 2)
+
+Pushing leaves the obstacle on the floor. Two other ways remove it for good:
+
+* **Carry:** lift a pallet, crate or shelf unit and put it on a free rack slot (`T`, pallets and crates) or dump slot (`D`, any carryable kind). A slot holds one obstacle, so slots run out.
+* **Fill:** lift debris and drop it into a pit (`P`). The pit and the debris are both gone, and a filled pit stays filled.
+
+A loaded step costs `kappa_c × weight` (default `kappa_c = 2.0`), plus `pick_fee` and `drop_fee`. Each robot picks the cheapest of push, carry or fill for each obstacle on its route. Scenarios: `warehouse_racks`, `dump_central`, `site_pits`, `mixed`; the `site` layout builds one. In the full S2 run, racks changed the mix of push and carry, not the total cost. On `dump_central` the dump is far away, so at the default costs nothing is carried (`experiments/doi_s2_modes.py`).
+
 ### What Can Go Wrong
 
 - **Collateral:** the obstacle lands where it blocks a route. The ledger-based evidence tries to avoid this, but a robot decides from its own belief. The `collateral` metric measures it on the true map.
@@ -333,6 +359,9 @@ Every run records these (`--verbose` prints them):
 | **HR_av** | `(J_arm − J_free) / (J_hindsight − J_free)`: how many times worse than hindsight, on the *avoidable* cost. Ski-rental theory predicts about 2 |
 | **PoD** | `J_arm / J_central`: the price of deciding from local, delayed information |
 | **overrides** | Times the physics layer had to stop a collision |
+| **carries**, **fills** | Obstacles taken to a slot, and pits filled |
+| **carry_cost** | Loaded steps at `kappa_c × weight` each |
+| **slot_conflicts** | Drops refused because the slot was full or the pit already filled |
 
 ---
 
@@ -340,19 +369,55 @@ Every run records these (`--verbose` prints them):
 
 | Script | Question |
 |---|---|
-| `doi_e2_information.py` | How much does limited sharing (range, loss, delay) cost? |
-| `doi_e7_intake.py` | What does turning text reports into records cost and risk? |
+| `doi_e1_ratio.py` | E1: how close is the rule to the exact optimum (competitive ratio), in the abstract model and on grids? |
+| `doi_e2_information.py` | E2: how much does limited sharing (range, loss, delay) cost? |
+| `doi_e7_intake.py` | E7: what does turning text reports into records cost and risk? |
+| `doi_s2_modes.py` | S2: push, carry or fill? How the choice moves with slot capacity and haul distance |
 | `doi_e9_headroom.py` | How much can any forecaster change fleet cost on `shift_notice`? (no model) |
 | `doi_agent_cases.py` | Collect forecast cases with their truth label into `data/forecasts/` (no model) |
 | `doi_agent_eval.py` | Score forecasters, models included, on those cases: accuracy, calibration, failures, cost |
 | `doi_e9_agent.py` | Does the forecast agent lower fleet cost, and what happens when its notices are wrong? |
-| `doi_e1_ratio.py` | E1: competitive ratio against the exact optimum in the abstract model (`experiments/doi_e1_ratio.py`) |
+| `doi_make_notices.py` | Write stand-in notice texts with language models (kept apart from the human set) |
+| `doi_build_incidents.py`, `doi_intake_run.py`, `doi_intake_eval.py` | The incident report datasets, and running and scoring the intake step |
 
-Each has a `--quick` pilot mode, and `doi_common.py` is the shared grid runner. The experiments built on the earlier pit model (single-resource validity, complements, claims, shifting demand, warehouse scale, the approval gate) were removed with it; they will be re-expressed for pushing in a later stage.
+Most have a `--quick` pilot mode, and `doi_common.py` is the shared grid runner. The experiments built on the earlier pit model (single-resource validity, complements, claims, shifting demand, warehouse scale, the approval gate) were removed with it and have not been re-expressed for pushing.
 
-The three scripts that can reach a model (`doi_agent_eval.py`, `doi_e9_agent.py`, and `run_doi.py` with `--agent-live`) replay stored calls by default. A call that is not stored is an error; `--agent-live` lets it reach the model, and the two experiment scripts then print an upper bound on calls and tokens and ask before spending. Model keys come from `DOI_LLM_<KEY>_URL` and `DOI_LLM_<KEY>_MODEL`; the experiments use `small` and `large`, and one exported `OPENAI_API_KEY` serves both when their URL is `https://api.openai.com/...`.
+The scripts that can reach a model (`doi_agent_eval.py`, `doi_e9_agent.py`, `doi_make_notices.py`, and `run_doi.py` with `--agent-live`) replay stored calls by default. A call that is not stored is an error; `--agent-live` (`--live` in the scripts) lets it reach the model, and the scripts then print an upper bound on calls and tokens and ask before spending. Model keys come from `DOI_LLM_<KEY>_URL` and `DOI_LLM_<KEY>_MODEL`; the experiments use `small` and `large`, and one exported `OPENAI_API_KEY` serves both when their URL is `https://api.openai.com/...`. To score a model use `--sample N`, not `--quick`: the first 20 cases all come from one seed.
 
-**Status:** no full experiment has been run on this model. Single runs are anecdotes.
+### What has been measured
+
+**Does a forecast help? (E9, no model, 100 seeds, `shift_notice`, lambda = 0.5.)** Mean avoidable cost, total cost minus the `free` arm's on the same seed. Lower is better.
+
+| Arm | Work shifts to the other bays | No shift |
+|---|---|---|
+| `never` | 375 | 387 |
+| `rof` | 147 | 105 |
+| `rof_a` + `numeric` | 130 | 75 |
+| `rof_a` + `ledger` | 116 | 77 |
+| `rof_a` + `oracle` (best possible) | 112 | 72 |
+| `rof_a` + `inverted` (worst possible) | 178 | 142 |
+
+The guarded rule with a plain numeric forecast beats `rof` by a median of 12 to 17 per run (95% interval above zero). A perfect forecast would add a further 4% to 14% at lambda = 0.5 (27% in the shift case at lambda = 0.25). At lambda = 1 every arm is the same as `rof`.
+
+**Can a language model give the forecast? (accuracy on 100 dev cases spread over 20 seeds.)**
+
+| Forecaster | Accuracy |
+|---|---|
+| `ledger` (yes if the saving already recorded exceeds 2; reads no notice) | 0.90 (0.88 on all dev, 0.86 on 2,949 held-out cases) |
+| `gpt-4o` with tools | 0.59 |
+| `gpt-4o-mini` with tools | 0.55 |
+| `numeric` extrapolation | 0.48 |
+| `keyword` notice reader | 0.55 (0.49 on held-out wording) |
+
+The truth is "yes" in half of these cases, but the models answer "yes" in only about 20% (`gpt-4o-mini`) and 30% (`gpt-4o`) of them. The model arms of E9 have not been run, so there is no end-to-end cost for a model yet.
+
+**Limits.**
+
+* In E9 the cost is identical with a true notice and with none, and `keyword` equals `numeric`. Either notices rarely name the obstacle's region or they do not reach the robots in time. This has not been checked yet.
+* There is no human-written notice set. `data/forecasts/llm_notices.jsonl` holds 124 texts written by `gpt-4o-mini` and `gpt-4o`; anything scored on it is a model scored on model-written text.
+* At a high fee a pushed pallet can land on another robot's pending goal and the rule never clears it (16 of 8,000 runs in an earlier pilot, none in the 8,000 above). Stalled points are left out of the summaries.
+
+Single runs are anecdotes.
 
 ---
 
@@ -404,6 +469,19 @@ python run_doi.py --demo toy --fee 100 --policy never,rof --no-show
 python run_doi.py --demo toy --verbose --no-show
 ```
 
+### Stage 2: racks, a dump region, pits
+```bash
+python run_doi.py --scenario warehouse_racks --robots 8 --policy rof,never
+python run_doi.py --scenario site_pits --robots 8 --policy rof,never
+python run_doi.py --layout site --rows 15 --cols 21 --pits 3 --debris 4 --racks 4 --yes
+```
+
+### A forecaster behind `rof_a`
+```bash
+python run_doi.py --scenario shift_notice --robots 8 --policy rof,rof_a --forecaster ledger   # no model
+python run_doi.py --scenario shift_notice --robots 8 --policy rof_a --forecaster llm:small --agent-live
+```
+
 ### Help
 ```bash
 python run_doi.py --guide     # every flag in plain language
@@ -413,11 +491,15 @@ python run_doi.py --list      # every scenario and arm
 ### Run an Experiment
 ```bash
 python experiments/doi_e2_information.py --quick --jobs 4
+python experiments/doi_agent_cases.py                       # forecast cases for dev and test (no model)
+python experiments/doi_agent_eval.py --cases data/forecasts/dev.jsonl --forecasters numeric,keyword,ledger --sample 100
+python experiments/doi_e9_agent.py --model-keys "" --jobs 4  # E9 with no model arms
 ```
 
 ### Run Tests
 ```bash
-python -m pytest tests/doi -q
+python -m pytest tests/doi -q      # 486 tests
+python -m pytest tests -q          # with the legacy tests: 538
 ```
 
 ---
@@ -441,6 +523,8 @@ MAPF/
 │   ├── agent.py                     # RobotAgent (sense/receive/decide/act)
 │   ├── pushplan.py                  # The cheapest push plan on a robot's own route
 │   ├── pusher.py                    # Carries a push plan out
+│   ├── carryplan.py                 # Carry and fill plans (Stage 2)
+│   ├── carrier.py                   # Carries a carry or fill plan out
 │   ├── policies.py                  # The arms: never / myopic / eager / rof / central ...
 │   ├── belief.py                    # A robot's private view
 │   ├── crdt.py                      # Mergeable data structures for the ledger
@@ -452,8 +536,10 @@ MAPF/
 │   ├── incidents.py                 # Incident report text
 │   ├── llm/                         # Report intake and the chat client; stored, replayable model calls
 │   ├── forecast/                    # Forecast cases, tools, the agent loop, the forecasters behind rof_a
+│   │                                #   (numeric, keyword, ledger, oracle, inverted, llm)
 │   ├── notices.py                   # Text notices about future traffic (wording banks, delivery)
 │   │
+│   ├── abstract/                    # The abstract model and its exact optimum (E1)
 │   ├── oracle.py                    # Hindsight benchmark
 │   ├── metrics.py                   # RunResult + HR_av / PoD / collateral
 │   ├── stats.py                     # Bootstrap CIs, paired tests
@@ -466,15 +552,21 @@ MAPF/
 │
 ├── experiments/
 │   ├── doi_common.py                # Shared grid runner
-│   ├── doi_e2 / doi_e7 *.py         # Information and intake experiments
-│   └── doi_e9_*.py, doi_agent_*.py  # Forecast guard: headroom pilot, end-to-end, cases, scoring
+│   ├── doi_e1 / doi_e2 / doi_e7 *.py  # Ratio, information and intake experiments
+│   ├── doi_s2_modes.py              # Push versus carry versus fill
+│   ├── doi_e9_*.py, doi_agent_*.py  # Forecast guard: headroom pilot, end-to-end, cases, scoring
+│   └── doi_make_notices.py          # Stand-in notice texts written by models
+│
+├── data/
+│   ├── incidents/                   # Incident report datasets
+│   └── forecasts/                   # Stand-in notices and the protocol for the human set
 │
 ├── docs/research/
 │   ├── demo-guide.md                # How to present the demo
 │   ├── theory.md                    # The propositions (written for the earlier pit model)
 │   └── results.md                   # Status of the experiments
 │
-└── tests/doi/                       # One test file per module
+└── tests/doi/                       # 486 tests, one file per area
 ```
 
 ---
@@ -485,6 +577,7 @@ MAPF/
 |---|---|
 | `numpy` | Arrays and statistics |
 | `matplotlib` | The window, GIF and HTML player |
+| `pandas` | The experiment scripts (summaries and CSV output) |
 | `pytest` | Unit testing |
 
-Everything else uses the Python standard library. It reuses the legacy `Grid` and `CellType` from `src/environment/` and does not modify any legacy code.
+The simulator itself needs only `numpy` and `matplotlib`; everything else uses the Python standard library, including the HTTP calls to a model. It reuses the legacy `Grid` and `CellType` from `src/environment/` and does not modify any legacy code.

@@ -679,8 +679,8 @@ variants.
 
 A robot can also **carry** an obstacle to a dump region or a rack (many one-obstacle slots), or **fill** a pit with
 debris. Scenarios: `warehouse_racks`, `dump_central`, `site_pits`, `mixed`. Build your own with
-`--layout site`. At the default costs pushing is cheaper than any haul, so racks change the mix of push and carry,
-not the total cost (`experiments/doi_s2_modes.py`).
+`--layout site`. In the full S2 run, racks changed the mix of push and carry, not the total cost. On `dump_central` the
+dump is far away, so at the default costs nothing is carried (`experiments/doi_s2_modes.py`).
 
 ### Run it
 
