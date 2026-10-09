@@ -16,12 +16,4 @@ No code generates this file. It is collected by hand and committed when ready.
 * Each writer is told the kind and the zone group and writes one short message as they would on a radio or chat.
   A surge says work is about to move into that group. A drop says work there is about to stop. A distractor is
   any message that does not change where robots will go; its `group` is empty.
-* No real names, sites or personal data. The texts are sent to a hosted API.
-
-## Stand-in: notices written by language models
-
-`experiments/doi_make_notices.py` asks language models (the keys `small` and `large`, in turn) for the same kinds of
-messages and writes `llm_notices.jsonl`, with the model that wrote each row in `source`. It is a stand-in when no
-people are available. **These texts are not human-written**: do not report results on them as the `human` set or as
-level 2 of the design. To run the case collector on them, pass `--human-notices data/forecasts/llm_notices.jsonl`,
-and say in the write-up that a model was scored on text a model wrote.
+* No real names, sites or personal data.

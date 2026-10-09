@@ -7,7 +7,11 @@ A research-grade Python simulator for studying how multiple robots can navigate 
 The repository has two parts:
 
 * **Legacy simulator** (sections 1 to 11): centralised multi-robot path finding on a grid, from independent A* up to cooperating agents, plus removable obstacles (pits and sandbags).
-* **Rent-or-Fill** (section 12, `src/doi/`): a decentralised simulator in which a fleet decides, without a central planner, when it is cheaper to push a removable obstacle out of the way than to keep walking round it, with an optional language-model forecaster behind a safety guard.
+* **Rent-or-Fill** (section 12, `src/doi/`): a decentralised simulator in which a fleet decides, without a central planner, when it is cheaper to push a removable obstacle out of the way than to keep walking round it, with a forecaster, a one-line rule on the shared ledger, behind a safety guard.
+
+Rent-or-Fill is where the research now lives. The legacy simulator is the background it grew out of and a
+working baseline: the two parts share only the grid types in `src/environment/grid.py`, and the legacy code is
+unchanged.
 
 ---
 
@@ -571,12 +575,10 @@ MAPF/
 │
 ├── src/doi/                         # Rent-or-Fill: world, agents, policies, network, scenarios,
 │   │                                #   carry/dump/pit-fill (Stage 2), animation and the wizard
-│   ├── forecast/                    # Forecast cases, forecasters, the agent loop and its tools
-│   └── llm/                         # Chat client, record/replay cache, exception intake
+│   └── forecast/                    # Forecast cases and the forecasters behind rof_a (ledger, numeric, oracle)
 │
 ├── data/
-│   ├── incidents/                   # Incident report datasets
-│   └── forecasts/                   # Stand-in notice texts and the protocol for the human set
+│   └── forecasts/                   # Forecast cases (dev and test) with their truth label
 │
 ├── docs/research/                   # Research design, theory, results, prior-art notes
 │
@@ -584,7 +586,7 @@ MAPF/
     ├── test_astar.py                # 22 A* unit tests
     ├── test_conflicts.py            # 9 conflict detection tests
     ├── test_mapf.py                 # 21 MAPF + RobotManager tests
-    └── doi/                         # 486 Rent-or-Fill tests, one file per module
+    └── doi/                         # 403 Rent-or-Fill tests, one file per module
 ```
 
 ---
@@ -656,7 +658,7 @@ fleet has recorded so far, read from a shared ledger that spreads by gossip, rea
 | `myopic`, `eager` | push if it pays for *me* now / push at the first sign of a saving |
 | **`rof`** | push when the fleet's recorded detour total reaches the price |
 | `rof_p` | the same rule with the threshold scaled by the robot's own forecast of whether the push will pay |
-| `rof_a` | `rof_p` with a pluggable forecaster (a model, a rule or an oracle) behind a guard, see below |
+| `rof_a` | `rof_p` with a pluggable forecaster (the `ledger` rule, a numeric extrapolation or an oracle) behind a guard, see below |
 | `central` | the same rule with one boss who sees every detour at once |
 | `free`, `hindsight` | cost references: every obstacle removed for free in advance, and the set an offline optimum would remove |
 
@@ -668,12 +670,12 @@ variants.
 * **L0** `world.py`: ground truth, move arbitration (vertex, swap and cycle conflicts), pushing and carrying.
 * **L1** `agent.py`, `pusher.py`, `policies.py`: one agent per robot with its own CRDT belief
   (`crdt.py`, `belief.py`, `evidence.py`), talking through `network.py`. The push decision is a numeric rule.
-* **L2** `llm/` and `forecast/`: language models, used in two places and never inside the rule itself.
-  *Exception intake* turns a text report ("pallet down in aisle 7") into a class and a place; it runs offline and
-  the simulator replays the stored answers. The *forecast agent* gives a yes/no forecast, "will the fleet's saving
-  reach the price?", for `rof_a`. A guard keeps the classical rule whenever there is no forecast, so a failing
-  model cannot make the fleet worse than the rule it replaces. Model calls are recorded and replayed.
-  A test checks that the decision modules do not import `llm`.
+* **L2** `forecast/`: the forecaster behind `rof_a`. A forecaster answers one yes/no question, "will the fleet's
+  saving reach the price?". The forecaster used is the **ledger rule**: yes when the saving already recorded in
+  the shared ledger exceeds a fixed constant (2), no otherwise. A guard turns the answer into a threshold (lower on
+  a yes, raised on a no) and keeps the classical rule whenever there is no answer, so a bad forecast cannot make
+  the fleet worse than the rule it replaces (Theorem 3 and Proposition 5). The forecaster cannot move a robot.
+  `numeric`, `oracle` (best possible) and `inverted` (worst possible) are kept as references.
 
 ### Stage 2: carry, racks and pit fill
 
@@ -703,17 +705,15 @@ Most scripts have a `--quick` pilot mode. Results land in `experiments/results/d
 |---|---|
 | `doi_e1_ratio.py` | E1: how close is `rof` to the exact optimum (competitive ratio)? |
 | `doi_e2_information.py` | E2: what does imperfect information cost (ledger range, loss, delay, fleet size)? |
-| `doi_e7_intake.py` | E7: cost of no, oracle and language-model intake, and of false reports |
+| `doi_e7_intake.py` | E7: cost of no intake against a perfect incident report, and of false reports |
 | `doi_s2_modes.py` | S2: push versus carry versus fill, against slot capacity and haul distance |
-| `doi_e9_headroom.py` | E9 pilot: how much can any forecaster change cost? Calls no model |
+| `doi_e9_headroom.py` | E9 pilot: how much can any forecaster change cost? |
 | `doi_e9_agent.py` | E9: the guarded policy with each forecaster, end to end on `shift_notice` |
 | `doi_agent_cases.py`, `doi_agent_eval.py` | collect forecast cases with their truth label; score forecasters on them |
-| `doi_make_notices.py` | write stand-in notice texts with language models (not the human set) |
-| `doi_intake_run.py`, `doi_intake_eval.py`, `doi_build_incidents.py` | the incident datasets and intake scoring |
 
 ### What has been measured
 
-**Does a forecast help? (E9, no model, 100 seeds, `shift_notice`, λ = 0.5.)** Mean avoidable cost, that is
+**Does a forecast help? (E9, 100 seeds, `shift_notice`, λ = 0.5, κ = 4, push fee 1.)** Mean avoidable cost, that is
 total cost minus the `free` arm's on the same seed. Lower is better.
 
 | Arm | Work shifts to the other bays | No shift |
@@ -721,73 +721,65 @@ total cost minus the `free` arm's on the same seed. Lower is better.
 | `never` | 375 | 387 |
 | `rof` | 147 | 105 |
 | `rof_a` + `numeric` forecast | 130 | 75 |
-| `rof_a` + `ledger` rule | 116 | 77 |
+| **`rof_a` + `ledger` rule** | **116** | **77** |
 | `rof_a` + `oracle` (best possible) | 112 | 72 |
 | `rof_a` + `inverted` (worst possible) | 178 | 142 |
 
-The guarded rule with a plain numeric forecast beats `rof` by a median of 12 to 17 per run (95% interval above
-zero). A perfect forecast would add a further 4% to 14% at λ = 0.5 (27% in the shift case at λ = 0.25), so
-there is a limited margin for a smarter forecaster to win.
+Paired over the same 100 seeds (mean difference per run, bootstrap 95% interval):
 
-**Can a language model give that forecast? (100 dev cases spread over 20 seeds.)** Accuracy of the yes/no forecast:
+| Comparison | Work shifts | No shift |
+|---|---|---|
+| `rof` minus `rof_a` + `ledger` | 31 (21 to 41) | 28 (16 to 40) |
+| `rof` minus `rof_a` + `numeric` | 17 (5 to 29) | 29 (18 to 41) |
+| `rof_a` + `numeric` minus `rof_a` + `ledger` | 14 (5 to 24) | -1 (-7 to 4) |
+| `rof_a` + `ledger` minus `rof_a` + `oracle` | 4 (-3 to 10) | 4 (-1 to 10) |
+
+The guarded rule with the ledger forecaster beats plain `rof` in both cases, beats the numeric forecast when the
+work shifts and ties it when it does not, and cannot be told apart from the best possible forecaster. At
+λ = 1 every arm is the same as `rof`.
+
+**Accuracy of the yes/no forecast (100 dev cases spread over 20 seeds).**
 
 | Forecaster | Accuracy |
 |---|---|
 | `ledger`: yes if the saving already recorded exceeds 2 | 0.90 (0.88 on all dev, 0.86 on 2,949 held-out cases) |
-| `gpt-4o` with tools | 0.59 |
-| `gpt-4o-mini` with tools | 0.55 |
 | `numeric` extrapolation | 0.48 |
 | `keyword` notice reader | 0.55 (0.49 on held-out wording) |
 
-The truth is "yes" in half of these cases, but the models answer "yes" in only about 20% (`gpt-4o-mini`) and 30%
-(`gpt-4o`) of them, and they do not make use of the ledger. A one-line rule on the recorded saving beats them by
-about 30 points, and it reads no notice. The model arms of E9 have not been run, so there is no end-to-end cost
-for a model yet.
+The label counts every task, past and future, so the saving already recorded settles most of it. That is why a
+one-line rule is hard to beat; judge it by the E9 costs above, not by accuracy alone.
 
 ### Limits to know about
 
-* **Notices and the E9 costs.** Notices do reach the robots: in 40 traced runs every robot held both notices.
-  The costs are identical with and without a notice because no arm in the no-model E9 reads one (`keyword` uses
-  cue phrases from the `dev` wording and E9 uses the `test` wording, by design). So E9 says nothing yet about
-  the value of reading notices; only a model arm can. It does bound it: the best possible forecaster (`oracle`)
-  is within 4 of the `ledger` rule (3% to 6% of avoidable cost), so a perfect notice reader has little left to
-  win. The label counts every task, past and future, so the saving already recorded settles most of it, which is
-  why the one-line ledger rule is hard to beat. A naive reader (a drop notice means no, a surge means yes) is
-  right only 47% of the time on true notices, against 88% for the ledger rule.
-* **No human-written notice set exists.** `data/forecasts/llm_notices.jsonl` holds 124 texts written by
-  `gpt-4o-mini` and `gpt-4o`. Anything scored on it is a model scored on model-written text, not the human set.
+* **The ledger rule ignores the price.** Its constant (2) was fixed on development seeds and never refitted. It
+  has been run at fee 1 and κ 4, the E9 setting. At a much higher fee a rule that also looks at the price is
+  needed, and that has not been measured here.
+* **Notices.** The `shift_notice` scenario delivers text notices to the robots, but the ledger rule reads none, so
+  the E9 costs are identical with and without a notice. E9 does bound what a notice reader could win: the best
+  possible forecaster (`oracle`) is within 4 of the ledger rule (3% to 6% of avoidable cost).
 * **Stalls.** At a high fee a pushed pallet can land on another robot's pending goal and the rule never clears it
   (16 of 8,000 runs in an earlier pilot, none in the 8,000 above). Stalled points are left out of the summaries.
+* **No bound for several interacting obstacles.** The propositions hold for one candidate at a time; a test records
+  a counterexample for several.
 * Experiments E3 to E6 and E8 (complements, claims, shifting demand, benchmark maps, the human approval gate)
   were written for an earlier pit model and have been removed, not re-run for pushing. See
   `docs/research/results.md`.
 
-### Configuration
-
-Models are configured through environment variables only. Keys are never written to files.
+### Run the forecast experiments
 
 ```bash
-export OPENAI_API_KEY=...                     # kept in your shell profile
-export DOI_LLM_SMALL_URL=https://api.openai.com/v1 DOI_LLM_SMALL_MODEL=gpt-4o-mini
-export DOI_LLM_LARGE_URL=https://api.openai.com/v1 DOI_LLM_LARGE_MODEL=gpt-4o
+python run_doi.py --scenario shift_notice --robots 8 --policy rof,rof_a --forecaster ledger
+python experiments/doi_agent_cases.py                                  # forecast cases with their truth label
+python experiments/doi_agent_eval.py --cases data/forecasts/dev.jsonl --forecasters numeric,keyword,ledger --sample 100
+python experiments/doi_e9_agent.py --jobs 4                            # E9, every forecaster
 ```
 
-Anything that can spend money prints an upper bound on the calls and asks first. A model run replays stored
-calls and fails on a miss unless you pass `--live`:
-
-```bash
-python experiments/doi_agent_cases.py                                  # collect forecast cases (no model)
-python experiments/doi_agent_eval.py --cases data/forecasts/dev.jsonl --forecasters numeric,keyword,ledger,llm:small --sample 100 --live
-python experiments/doi_e9_agent.py --model-keys "" --jobs 4            # E9 with no model arms
-```
-
-Use `--sample N`, not `--quick`, to score a model: the first 20 cases all come from one seed.
-The datasets and their protocol are described in [data/forecasts/README.md](data/forecasts/README.md).
+Use `--sample N`, not `--quick`, to score forecasters: the first 20 cases all come from one seed.
 
 ### Tests
 
 ```bash
-python -m pytest tests -q              # 538 tests; tests/doi holds the Rent-or-Fill ones
+python -m pytest tests -q              # 455 tests; tests/doi holds the Rent-or-Fill ones
 ```
 
 ### Design notes

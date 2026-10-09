@@ -72,11 +72,10 @@ Setup: `--sim`, `--demo`, `--scenario`, `--policy a,b,c` (arms compared on ident
 `--tasks`, `--seed`. Costs: `--kappa` (push step = kappa x weight), `--fee` (cost per push run),
 `--push-max`, `--theta` (0 eager, 1 ski rental). Information: `--r-comm` (message reach, 0 none), `--loss`,
 `--latency`. Map: `--build`, `--layout barrier|strips|map`, `--rows`, `--cols`, `--blocks`, `--doors`,
-`--kind`, `--crossing`, `--strips`, `--pallets`, `--crates`, `--shelves`, `--map`, `--yes`. Language layer:
+`--kind`, `--crossing`, `--strips`, `--pallets`, `--crates`, `--shelves`, `--map`, `--yes`. Incident reports:
 `--intake none|oracle`, `--p-false`, `--p-report`, `--p-wrong-class`. Output: `--html`, `--gif`, `--gif-arms`,
 `--show`, `--no-show`, `--verbose`, `--replay`, `--no-benchmarks`.
-Forecast agent (arm `rof_a`): `--forecaster numeric|keyword|oracle|inverted|llm:<key>`, `--agent-mode tools|single`,
-`--agent-cache`, `--agent-live` (the only flag that spends money; without it stored model calls are replayed).
+Forecaster (arm `rof_a`): `--forecaster ledger|numeric|keyword|projected|oracle|inverted`.
 Table columns: J total cost; HR_av times worse than hindsight on avoidable cost; PoD cost relative to the
 central arm; collateral detour caused by a parked obstacle.
 
@@ -88,6 +87,5 @@ central arm; collateral detour caused by a parked obstacle.
 * A pushed obstacle can block someone else. The ledger's evidence includes that, but only from what the
   robot knows; the `collateral` column measures what it really cost on the true map.
 * The barrier maps are built to make pushing worthwhile. `--crossing 0` or a high `--fee` shows when it is not.
-* The language model is simulated: `--intake oracle` stands in for it, and no real model has been run.
 * Only pushing exists. Carrying obstacles to a dump zone, claim locks and detour pushes for others' benefit
   are later stages.
