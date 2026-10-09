@@ -49,7 +49,7 @@ def test_a_model_that_reads_the_notices_then_answers():
     assert second[-1]["role"] == "tool" and second[-1]["tool_call_id"] == "c1"
     assert "wave 2 is all in the south bays" in second[-1]["content"]
     assert [r["tool_choice"] for r in client.requests] == ["required", "required"]
-    assert PROMPT_VERSION == "forecast-v1" and AGENT_MODES == ("tools", "single")
+    assert PROMPT_VERSION == "forecast-v2" and AGENT_MODES == ("tools", "single")
 
 
 def test_the_last_turn_forces_answer_and_a_model_that_never_answers_is_no_answer():
@@ -100,6 +100,7 @@ def test_a_client_that_raises_is_client_error_and_keeps_what_was_spent():
     assert (res.answer, res.failed, res.calls, res.model) == (None, "client_error", 0, "boom")
     later = run_agent(CASE, _Boom(good_first=True))
     assert (later.failed, later.calls, later.tool_calls) == ("client_error", 1, 1)
+    assert res.reason == "TimeoutError: read timed out"      # the run's log says why the model failed
 
 
 def test_a_replay_miss_is_not_a_client_error():

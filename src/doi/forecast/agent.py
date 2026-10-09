@@ -13,7 +13,7 @@ from src.doi.forecast.tools import ANSWER, TOOLS, call_tool
 from src.doi.llm.chatcache import ReplayMiss
 from src.doi.llm.client import Chat, ChatResponse
 
-PROMPT_VERSION = "forecast-v1"
+PROMPT_VERSION = "forecast-v2"
 MAX_TURNS = 4               # model responses per forecast
 MAX_TOOL_CALLS = 8          # tool calls per forecast, not counting `answer`
 MAX_TOKENS = 400
@@ -21,26 +21,31 @@ REASON_CHARS = 200
 AGENT_MODES = ("tools", "single")
 FORCE_ANSWER = {"type": "function", "function": {"name": "answer"}}
 
-SYSTEM_TOOLS = """You advise one warehouse robot. The robot can move an obstacle out of the way now, which costs a one-off
-price, or keep walking round it. Give one forecast: over the rest of this shift, will the whole fleet's
-travel saving from moving this obstacle reach the price?
+_QUESTION = """You advise one warehouse robot. The robot can move an obstacle out of the way now, which costs a one-off
+price, or keep walking round it. Give one forecast: over the whole shift, will the fleet's total travel saving from
+moving this obstacle reach the price?
+
+The total is the saving counted so far plus the saving on the trips still to come. The saving counted so far is only
+a part of it and can be far below the price while the total still reaches it. Work it out in three steps:
+1. How many trips are still to come (trips expected minus trips recorded), and how many robots will make them.
+2. Where those trips will go. Recorded traffic shows where trips went so far; a notice that work is moving to other
+   zones means the trips still to come follow the notice, not the record. A notice that does not change where robots
+   travel (a printer, a rota) should change nothing.
+3. The saving per trip for those zone pairs (trip_saving). Multiply by the trips still to come, add the saving
+   counted so far, and compare the sum with the price.
+Answer yes when the sum reaches the price, no when it falls short. Do not default to no."""
+
+SYSTEM_TOOLS = _QUESTION + """
 
 You know only what this robot knows. Use the tools.
 - read_notices: messages the robot has received about future work. They can be wrong or irrelevant.
 - ledger_summary: the traffic recorded so far and how many trips are still to come.
 - trip_saving: how much one trip between two zones would save if the obstacle were moved.
+When you are ready, call answer. You have 4 turns."""
 
-Past traffic may not continue if a notice says the work is moving. A notice that does not change where
-robots travel should not change your forecast. When you are ready, call answer. You have 4 turns."""
+SYSTEM_SINGLE = _QUESTION + """
 
-SYSTEM_SINGLE = """You advise one warehouse robot. The robot can move an obstacle out of the way now, which costs a one-off
-price, or keep walking round it. Give one forecast: over the rest of this shift, will the whole fleet's
-travel saving from moving this obstacle reach the price?
-
-You know only what this robot knows, which is given below. Notices can be wrong or irrelevant.
-
-Past traffic may not continue if a notice says the work is moving. A notice that does not change where
-robots travel should not change your forecast. Call answer."""
+You know only what this robot knows, which is given below. Notices can be wrong or irrelevant. Call answer."""
 
 
 def describe(case: ForecastCase) -> str:
@@ -48,7 +53,7 @@ def describe(case: ForecastCase) -> str:
     lines = [f"Candidate action: {case.mode} the {case.kind} at {tuple(case.obstacle)} so that it ends at "
              f"{tuple(case.landing)}.",
              f"Price of the move: {case.price:g}.",
-             f"Saving known to this robot so far: {case.known_saving:g}."]
+             f"Saving counted so far (part of the total, not the total): {case.known_saving:g}."]
     if case.zones:
         lines.append("Zones:")
         for name in sorted(case.zones):
@@ -126,8 +131,8 @@ def run_agent(case: ForecastCase, chat: Chat, mode: str = "tools") -> ForecastRe
             resp = chat.chat(messages, tools, FORCE_ANSWER if forced else "required", MAX_TOKENS)
         except ReplayMiss:
             raise                       # a missing store is the owner's to fix, not a model that failed
-        except Exception:
-            return tally.result(None, None, "", "client_error", used)
+        except Exception as exc:        # the guard keeps the classical rule; the message says why the model failed
+            return tally.result(None, None, f"{type(exc).__name__}: {exc}"[:REASON_CHARS], "client_error", used)
         tally.add(resp)
         messages.append(resp.message)
         calls = resp.message.get("tool_calls") or []
