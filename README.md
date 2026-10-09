@@ -787,5 +787,5 @@ python -m pytest tests -q              # 538 tests; tests/doi holds the Rent-or-
 
 ### Design notes
 
-The hypotheses, theory and status are in `docs/research/research-design.md`, `docs/research/theory.md`,
-`docs/research/results.md` and `docs/research/prior-art-verification.md`.
+The theory and status are in `docs/research/theory.md`, `docs/research/results.md` and
+`docs/research/prior-art-verification.md`.
